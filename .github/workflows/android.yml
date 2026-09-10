@@ -61,14 +61,19 @@ jobs:
       - name: Setup latest Android command-line tools
         uses: android-actions/setup-android@v4
 
-      - name: Install Android 17 / API 37 SDK
+      - name: Install Android 17 / API 37.0 preview SDK
         shell: bash
         run: |
           set -euxo pipefail
           command -v sdkmanager
           sdkmanager --version
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" "platform-tools"
+          sdkmanager --install \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "platform-tools" \
+            --channel=3
           sdkmanager --list_installed
+          test -d "$ANDROID_SDK_ROOT/platforms/android-37.0"
 
       - name: Setup Gradle 9.6
         uses: gradle/actions/setup-gradle@v6
@@ -88,15 +93,23 @@ jobs:
       - name: Real AccessibilityService test on Android 17 emulator
         uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
-          api-level: 37
+          # v2.38.0 does not yet natively understand the API 37.0 minor
+          # platform package. Keep its platform installer on 36.1 while using
+          # the actual Android 17 / API 37.0 system image installed from Canary.
+          api-level: 36.1
+          system-image-api-level: 37.0
+          channel: canary
           target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
           script: |
             set -euxo pipefail
-            adb shell getprop ro.build.version.release
-            adb shell getprop ro.build.version.sdk
+            RELEASE="$(adb shell getprop ro.build.version.release | tr -d '\r')"
+            SDK="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+            echo "ANDROID_RELEASE=$RELEASE"
+            echo "ANDROID_SDK=$SDK"
+            test "$SDK" = "37"
             APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
             adb install -r "$APK"
             adb shell settings put secure enabled_accessibility_services 'org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
