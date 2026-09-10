@@ -28,17 +28,19 @@ concurrency:
 
 jobs:
   ios-simulator:
-    name: iOS SDK + Simulator accessibility probe
-    runs-on: macos-latest
+    name: iOS SDK + Simulator accessibility probe / Xcode 26.6
+    runs-on: macos-26
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Xcode and iOS SDK versions
+      - name: Select latest stable Xcode
         shell: bash
         run: |
           set -euxo pipefail
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           sw_vers
           xcodebuild -version
           xcrun --sdk iphonesimulator --show-sdk-version
@@ -107,3 +109,41 @@ jobs:
           path: platforms/ios/simulator-runtime.log
           if-no-files-found: warn
           retention-days: 30
+
+  xcode-27-forward-compat:
+    name: iOS forward compatibility / Xcode 27 preview
+    runs-on: xcode-27
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Xcode 27 versions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Install Rust iOS Simulator target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Check shared Rust core
+        run: cargo check --lib --locked --target aarch64-apple-ios-sim
+
+      - name: Compile UIKit probe against Xcode 27 SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          xcrun swiftc \
+            platforms/ios/AppDelegate.swift \
+            -parse-as-library \
+            -sdk "$SDK" \
+            -target arm64-apple-ios17.0-simulator \
+            -framework UIKit \
+            -typecheck
