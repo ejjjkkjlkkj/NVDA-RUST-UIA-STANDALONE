@@ -211,10 +211,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
           COMPONENT='org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
 
-          # Instrumentation may reinstall/force-stop the target package. Re-enable
-          # the service explicitly before asserting the post-test service state.
+          # Android instrumentation may uninstall or force-stop the target app.
+          # Reinstall it before proving that the service can reconnect afterward.
+          adb install -r "$APK"
+          adb logcat -c
           adb shell settings put secure enabled_accessibility_services "$COMPONENT"
           adb shell settings put secure accessibility_enabled 1
 
@@ -229,10 +232,13 @@ jobs:
           done
 
           echo "$ENABLED" | tee platforms/android/accessibility-enabled-post.txt
-          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
-
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-post.txt
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
+
+          adb shell am start -a android.settings.SETTINGS
+          sleep 5
+          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
+
           grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
           grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt
           echo "ANDROID_17_ACCESSIBILITY_RUNTIME = PASS"
