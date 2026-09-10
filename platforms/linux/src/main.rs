@@ -139,10 +139,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             node.platform_id
                         );
 
-                        if matches!(event, Event::Focus(_)) {
-                            if let Some(utterance) = focus_utterance(&node) {
-                                println!("AT_SPI_PRESENTATION = {}", utterance.text);
-                            }
+                        if matches!(event, Event::Focus(_))
+                            && let Some(utterance) = focus_utterance(&node)
+                        {
+                            println!("AT_SPI_PRESENTATION = {}", utterance.text);
                         }
                     }
                     Ok(None) => {
