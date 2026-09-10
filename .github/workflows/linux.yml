@@ -96,6 +96,7 @@ jobs:
             grep -q "AT_SPI_ROOT_CHILDREN =" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_EVENT #" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_SEMANTIC #" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_CAPABILITIES interfaces=Some" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_PRESENTATION =" platforms/linux/atspi-runtime.log
             grep -Eq "AT_SPI_COUNTS total=[1-9][0-9]* focus=[1-9][0-9]*" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_RUNTIME = PASS" platforms/linux/atspi-runtime.log
