@@ -5,8 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-atspi = { version = "=0.30.0", default-features = false, features = ["connection", "proxies", "wrappers", "tokio"] }
+atspi = { version = "=0.30.0", default-features = false, features = ["connection", "p2p", "proxies", "wrappers", "tokio"] }
 futures-util = "0.3"
+nvda-rust-uia-standalone = { path = "../.." }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints.rust]
