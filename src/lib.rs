@@ -1,5 +1,7 @@
 use std::fmt;
 
+pub mod platform;
+
 pub const DEFAULT_MONITOR_SECONDS: u64 = 15;
 
 pub fn parse_monitor_seconds(value: Option<&str>) -> u64 {
@@ -13,6 +15,16 @@ pub enum AccessibilityEventKind {
     Focus,
     TextChanged,
     TextSelectionChanged,
+}
+
+impl AccessibilityEventKind {
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::TextChanged => "text_changed",
+            Self::TextSelectionChanged => "text_selection_changed",
+        }
+    }
 }
 
 impl fmt::Display for AccessibilityEventKind {
@@ -76,7 +88,20 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_has_stable_wire_name() {
+    fn canonical_event_names_are_platform_neutral() {
+        assert_eq!(AccessibilityEventKind::Focus.canonical_name(), "focus");
+        assert_eq!(
+            AccessibilityEventKind::TextChanged.canonical_name(),
+            "text_changed"
+        );
+        assert_eq!(
+            AccessibilityEventKind::TextSelectionChanged.canonical_name(),
+            "text_selection_changed"
+        );
+    }
+
+    #[test]
+    fn event_kind_keeps_windows_compatibility_label() {
         assert_eq!(AccessibilityEventKind::Focus.to_string(), "FOCUS");
         assert_eq!(
             AccessibilityEventKind::TextChanged.to_string(),
