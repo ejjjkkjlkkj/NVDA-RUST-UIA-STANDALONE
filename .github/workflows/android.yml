@@ -163,27 +163,78 @@ jobs:
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
 
-      - name: Real AccessibilityService runtime test
+      - name: Prove AccessibilityService runtime before instrumentation
         shell: bash
         run: |
           set -euxo pipefail
           APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
-          adb install -r "$APK"
-          adb shell settings put secure enabled_accessibility_services 'org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
-          adb shell settings put secure accessibility_enabled 1
-          sleep 3
+          COMPONENT='org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
 
+          adb install -r "$APK"
           adb logcat -c
+          adb shell settings put secure enabled_accessibility_services "$COMPONENT"
+          adb shell settings put secure accessibility_enabled 1
+
+          for attempt in $(seq 1 30); do
+            ENABLED="$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')"
+            if [[ "$ENABLED" == *"org.nvdarust.screenreader"* ]]; then
+              break
+            fi
+            sleep 1
+          done
+          echo "$ENABLED" | tee platforms/android/accessibility-enabled-pre.txt
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-pre.txt
+
+          for attempt in $(seq 1 30); do
+            adb shell dumpsys accessibility > platforms/android/accessibility-dumpsys-pre.txt
+            if grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys-pre.txt; then
+              break
+            fi
+            sleep 1
+          done
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys-pre.txt
+
           adb shell am start -a android.settings.SETTINGS
           sleep 5
+          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat-pre.txt
+          grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat-pre.txt
+          grep -q 'EVENT type=' platforms/android/accessibility-logcat-pre.txt
+          echo "ANDROID_17_ACCESSIBILITY_RUNTIME_PRE_INSTRUMENTATION = PASS"
 
+      - name: Run AndroidX instrumentation tests
+        shell: bash
+        run: |
+          set -euxo pipefail
           gradle -p platforms/android :app:connectedDebugAndroidTest --stacktrace
-          adb shell dumpsys accessibility | tee platforms/android/accessibility-dumpsys.txt
+
+      - name: Restore and prove AccessibilityService after instrumentation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          COMPONENT='org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
+
+          # Instrumentation may reinstall/force-stop the target package. Re-enable
+          # the service explicitly before asserting the post-test service state.
+          adb shell settings put secure enabled_accessibility_services "$COMPONENT"
+          adb shell settings put secure accessibility_enabled 1
+
+          for attempt in $(seq 1 30); do
+            ENABLED="$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')"
+            adb shell dumpsys accessibility > platforms/android/accessibility-dumpsys.txt
+            if [[ "$ENABLED" == *"org.nvdarust.screenreader"* ]] \
+              && grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "$ENABLED" | tee platforms/android/accessibility-enabled-post.txt
           adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
 
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-post.txt
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
           grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
           grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt
-          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
           echo "ANDROID_17_ACCESSIBILITY_RUNTIME = PASS"
 
       - name: Stop emulator
@@ -203,7 +254,11 @@ jobs:
           path: |
             platforms/android/android-version.txt
             platforms/android/emulator.log
+            platforms/android/accessibility-enabled-pre.txt
+            platforms/android/accessibility-enabled-post.txt
+            platforms/android/accessibility-dumpsys-pre.txt
             platforms/android/accessibility-dumpsys.txt
+            platforms/android/accessibility-logcat-pre.txt
             platforms/android/accessibility-logcat.txt
             platforms/android/app/build/reports/androidTests/**
             platforms/android/app/build/outputs/apk/debug/*.apk
