@@ -1,0 +1,97 @@
+name: Android Fast Quality
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platforms/android/**"
+      - ".github/workflows/android-fast-quality.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "platforms/android/**"
+      - ".github/workflows/android-fast-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-fast-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-quality:
+    name: Android static quality and security invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android 17 SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "platform-tools" \
+            --channel=3
+
+      - name: Setup Gradle 9.6
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Android lint and JVM tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          gradle -p platforms/android :app:lintDebug :app:testDebugUnitTest --stacktrace
+
+      - name: AccessibilityService security invariants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MANIFEST="platforms/android/app/src/main/AndroidManifest.xml"
+          CONFIG="platforms/android/app/src/main/res/xml/accessibility_service_config.xml"
+          SERVICE="platforms/android/app/src/main/java/org/nvdarust/screenreader/ScreenReaderAccessibilityService.java"
+
+          grep -Fq 'android.permission.BIND_ACCESSIBILITY_SERVICE' "$MANIFEST"
+          grep -Fq 'android:canRetrieveWindowContent="true"' "$CONFIG"
+          grep -Fq 'flagReportViewIds' "$CONFIG"
+          grep -Fq 'flagRequestTouchExplorationMode' "$CONFIG"
+          grep -Fq 'flagRequestFilterKeyEvents' "$CONFIG"
+
+          grep -Fq 'String eventText = password ? "<password>"' "$SERVICE"
+          grep -Fq 'String safeNodeText = password ? "<password>"' "$SERVICE"
+          grep -Fq 'return "password field";' "$SERVICE"
+
+          if grep -Eq 'Log\.[a-zA-Z]+\([^;]*(getText\(\)|getContentDescription\(\))' "$SERVICE"; then
+            echo "Potential direct accessibility text logging detected" >&2
+            exit 1
+          fi
+
+          echo "ANDROID_ACCESSIBILITY_SECURITY_INVARIANTS = PASS"
+
+      - name: Upload lint and unit-test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-fast-quality-evidence
+          path: |
+            platforms/android/app/build/reports/lint-results-debug.*
+            platforms/android/app/build/reports/tests/**
+            platforms/android/app/build/test-results/**
+          if-no-files-found: warn
+          retention-days: 30
