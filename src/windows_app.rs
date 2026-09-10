@@ -17,6 +17,8 @@ const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
 static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
+static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
+static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
 
 struct ComApartment;
 
@@ -39,6 +41,36 @@ fn bstr_or_unavailable(value: Result<BSTR>) -> String {
         .unwrap_or_else(|_| "<unavailable>".to_string())
 }
 
+unsafe fn create_event_cache(automation: &IUIAutomation) -> Result<IUIAutomationCacheRequest> {
+    let cache = unsafe { automation.CreateCacheRequest()? };
+
+    for property in [
+        UIA_ProcessIdPropertyId,
+        UIA_FrameworkIdPropertyId,
+        UIA_ClassNamePropertyId,
+        UIA_LocalizedControlTypePropertyId,
+        UIA_NamePropertyId,
+        UIA_AutomationIdPropertyId,
+    ] {
+        unsafe { cache.AddProperty(property).ok()? };
+    }
+
+    Ok(cache)
+}
+
+fn event_cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
+    match unsafe { create_event_cache(automation) } {
+        Ok(cache) => {
+            println!("UIA_EVENT_PROPERTY_CACHE = ENABLED");
+            Some(cache)
+        }
+        Err(error) => {
+            eprintln!("UIA_EVENT_PROPERTY_CACHE = FALLBACK_CURRENT | {error}");
+            None
+        }
+    }
+}
+
 fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
     let Some(element) = sender.as_ref() else {
         eprintln!("{kind} #{sequence} | sender=NULL");
@@ -46,13 +78,69 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
     };
 
     unsafe {
+        let mut fallback_properties = 0_u64;
+
+        let process_id = match element.CachedProcessId() {
+            Ok(value) => value,
+            Err(_) => {
+                fallback_properties += 1;
+                element.CurrentProcessId().unwrap_or_default()
+            }
+        };
+
+        let framework = match element.CachedFrameworkId() {
+            Ok(value) => value.display().to_string(),
+            Err(_) => {
+                fallback_properties += 1;
+                bstr_or_unavailable(element.CurrentFrameworkId())
+            }
+        };
+
+        let class_name = match element.CachedClassName() {
+            Ok(value) => value.display().to_string(),
+            Err(_) => {
+                fallback_properties += 1;
+                bstr_or_unavailable(element.CurrentClassName())
+            }
+        };
+
+        let role = match element.CachedLocalizedControlType() {
+            Ok(value) => value.display().to_string(),
+            Err(_) => {
+                fallback_properties += 1;
+                bstr_or_unavailable(element.CurrentLocalizedControlType())
+            }
+        };
+
+        let name = match element.CachedName() {
+            Ok(value) => value.display().to_string(),
+            Err(_) => {
+                fallback_properties += 1;
+                bstr_or_unavailable(element.CurrentName())
+            }
+        };
+
+        let automation_id = match element.CachedAutomationId() {
+            Ok(value) => value.display().to_string(),
+            Err(_) => {
+                fallback_properties += 1;
+                bstr_or_unavailable(element.CurrentAutomationId())
+            }
+        };
+
+        if fallback_properties == 0 {
+            CACHE_FULL_HIT_EVENTS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            CACHE_FALLBACK_PROPERTIES.fetch_add(fallback_properties, Ordering::Relaxed);
+        }
+
         let snapshot = ElementSnapshot {
-            process_id: element.CurrentProcessId().unwrap_or_default(),
-            framework: bstr_or_unavailable(element.CurrentFrameworkId()),
-            class_name: bstr_or_unavailable(element.CurrentClassName()),
-            role: bstr_or_unavailable(element.CurrentLocalizedControlType()),
-            name: bstr_or_unavailable(element.CurrentName()),
-            automation_id: bstr_or_unavailable(element.CurrentAutomationId()),
+            process_id,
+            framework,
+            class_name,
+            role,
+            name,
+            automation_id,
         };
 
         println!("{}", format_event_line(kind, sequence, &snapshot));
@@ -106,13 +194,14 @@ unsafe fn run_modern(
     let automation: IUIAutomation = automation6.cast()?;
     let root = unsafe { automation.GetRootElement()? };
     let group = unsafe { automation6.CreateEventHandlerGroup()? };
+    let cache = event_cache(&automation);
 
     unsafe {
         group
             .AddAutomationEventHandler(
                 TEXT_CHANGED_EVENT,
                 TreeScope_Subtree,
-                None::<&IUIAutomationCacheRequest>,
+                cache.as_ref(),
                 automation_handler,
             )
             .ok()?;
@@ -121,7 +210,7 @@ unsafe fn run_modern(
             .AddAutomationEventHandler(
                 TEXT_SELECTION_CHANGED_EVENT,
                 TreeScope_Subtree,
-                None::<&IUIAutomationCacheRequest>,
+                cache.as_ref(),
                 automation_handler,
             )
             .ok()?;
@@ -131,7 +220,7 @@ unsafe fn run_modern(
 
     if let Err(error) = unsafe {
         automation
-            .AddFocusChangedEventHandler(None::<&IUIAutomationCacheRequest>, focus_handler)
+            .AddFocusChangedEventHandler(cache.as_ref(), focus_handler)
             .ok()
     } {
         let _ = unsafe { automation6.RemoveEventHandlerGroup(&root, &group).ok() };
@@ -185,6 +274,7 @@ unsafe fn run_compat(
 ) -> Result<()> {
     let automation = unsafe { create_compat_automation()? };
     let root = unsafe { automation.GetRootElement()? };
+    let cache = event_cache(&automation);
 
     unsafe {
         automation
@@ -192,7 +282,7 @@ unsafe fn run_compat(
                 TEXT_CHANGED_EVENT,
                 &root,
                 TreeScope_Subtree,
-                None::<&IUIAutomationCacheRequest>,
+                cache.as_ref(),
                 automation_handler,
             )
             .ok()?;
@@ -204,7 +294,7 @@ unsafe fn run_compat(
                 TEXT_SELECTION_CHANGED_EVENT,
                 &root,
                 TreeScope_Subtree,
-                None::<&IUIAutomationCacheRequest>,
+                cache.as_ref(),
                 automation_handler,
             )
             .ok()
@@ -219,7 +309,7 @@ unsafe fn run_compat(
 
     if let Err(error) = unsafe {
         automation
-            .AddFocusChangedEventHandler(None::<&IUIAutomationCacheRequest>, focus_handler)
+            .AddFocusChangedEventHandler(cache.as_ref(), focus_handler)
             .ok()
     } {
         let _ = unsafe {
@@ -291,6 +381,11 @@ pub fn run() -> Result<()> {
             FOCUS_COUNT.load(Ordering::Relaxed),
             TEXT_CHANGED_COUNT.load(Ordering::Relaxed),
             TEXT_SELECTION_COUNT.load(Ordering::Relaxed)
+        );
+        println!(
+            "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
+            CACHE_FULL_HIT_EVENTS.load(Ordering::Relaxed),
+            CACHE_FALLBACK_PROPERTIES.load(Ordering::Relaxed)
         );
         println!("UIA_NATIVE_EVENTS_RUNTIME = PASS");
     }
