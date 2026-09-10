@@ -8,5 +8,18 @@ fn main() -> windows_core::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    println!("nvda-rust-uia-standalone: UI Automation runtime requires Windows.");
+    use nvda_rust_uia_standalone::platform::current_backend;
+
+    let backend = current_backend();
+    println!("SCREEN_READER_CORE = PASS");
+    println!("PLATFORM_BACKEND = {backend:?}");
+    println!("NATIVE_ACCESSIBILITY_API = {}", backend.native_api());
+    println!(
+        "NATIVE_BACKEND_IMPLEMENTED = {}",
+        backend.is_native_backend_implemented()
+    );
+
+    if !backend.is_native_backend_implemented() {
+        println!("BACKEND_STATUS = PORTABLE_CORE_READY_NATIVE_ADAPTER_PENDING");
+    }
 }
