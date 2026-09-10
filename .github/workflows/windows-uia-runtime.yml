@@ -2,7 +2,9 @@ name: Windows UIA Runtime
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - automation/windows-uia-junit
     paths:
       - "src/**"
       - "Cargo.toml"
@@ -285,6 +287,85 @@ jobs:
           "WINDOWS_UIA_RUNTIME = PASS | focus=$focus | text_changed=$textChanged | text_selection=$textSelection | cache_full_hits=$fullHitEvents | cache_fallback_properties=$fallbackProperties | fixture_pid=$fixturePid | fixture_events=$($fixtureLines.Count) | fixture_named_events=$($fixtureNamedLines.Count) | fixture_focus_events=$($fixtureFocusLines.Count)" |
             Tee-Object -FilePath (Join-Path $evidence 'result.txt')
 
+      - name: Generate JUnit runtime evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-uia-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $summaryPath = Join-Path $evidence 'runtime-summary.json'
+          $junitPath = Join-Path $evidence 'runtime-summary.junit.xml'
+
+          $document = New-Object System.Xml.XmlDocument
+          $suite = $document.CreateElement('testsuite')
+          $suite.SetAttribute('name', 'windows-uia-runtime')
+          [void]$document.AppendChild($suite)
+
+          $checks = @(
+            'native-uia-initialization',
+            'native-uia-runtime',
+            'property-cache-enabled',
+            'focus-events-observed',
+            'controlled-fixture-focus-observed',
+            'complete-cache-hit-observed'
+          )
+
+          if (Test-Path $summaryPath) {
+            $data = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            $suite.SetAttribute('tests', [string]$checks.Count)
+            $suite.SetAttribute('failures', '0')
+            $suite.SetAttribute('errors', '0')
+            foreach ($check in $checks) {
+              $case = $document.CreateElement('testcase')
+              $case.SetAttribute('classname', 'windows.uia.runtime')
+              $case.SetAttribute('name', $check)
+              [void]$suite.AppendChild($case)
+            }
+            $properties = $document.CreateElement('properties')
+            foreach ($entry in @{
+              focusEvents = $data.focusEvents
+              textChangedEvents = $data.textChangedEvents
+              textSelectionEvents = $data.textSelectionEvents
+              cacheFullHitEvents = $data.cacheFullHitEvents
+              cacheFallbackProperties = $data.cacheFallbackProperties
+              fixtureEvents = $data.fixtureEvents
+              fixtureNamedEvents = $data.fixtureNamedEvents
+              fixtureFocusEvents = $data.fixtureFocusEvents
+            }.GetEnumerator()) {
+              $property = $document.CreateElement('property')
+              $property.SetAttribute('name', [string]$entry.Key)
+              $property.SetAttribute('value', [string]$entry.Value)
+              [void]$properties.AppendChild($property)
+            }
+            [void]$suite.PrependChild($properties)
+          } else {
+            $suite.SetAttribute('tests', '1')
+            $suite.SetAttribute('failures', '1')
+            $suite.SetAttribute('errors', '0')
+            $case = $document.CreateElement('testcase')
+            $case.SetAttribute('classname', 'windows.uia.runtime')
+            $case.SetAttribute('name', 'runtime-proof')
+            $failure = $document.CreateElement('failure')
+            $failure.SetAttribute('message', 'Windows UIA runtime proof did not produce a valid runtime summary')
+            $failure.InnerText = 'Inspect screen-reader.stdout.txt, screen-reader.stderr.txt, and the workflow log.'
+            [void]$case.AppendChild($failure)
+            [void]$suite.AppendChild($case)
+          }
+
+          $settings = New-Object System.Xml.XmlWriterSettings
+          $settings.Indent = $true
+          $settings.Encoding = New-Object System.Text.UTF8Encoding($false)
+          $writer = [System.Xml.XmlWriter]::Create($junitPath, $settings)
+          try {
+            $document.Save($writer)
+          } finally {
+            $writer.Dispose()
+          }
+
+          [xml](Get-Content $junitPath -Raw) | Out-Null
+          Write-Host "WINDOWS_UIA_JUNIT = PASS | $junitPath"
+
       - name: Publish runtime summary
         if: always()
         shell: pwsh
@@ -304,6 +385,7 @@ jobs:
             $lines += "- Controlled fixture UIA events: $($data.fixtureEvents)"
             $lines += "- Named fixture UIA events: $($data.fixtureNamedEvents)"
             $lines += "- Fixture focus events: $($data.fixtureFocusEvents)"
+            $lines += '- JUnit evidence: `runtime-summary.junit.xml`'
           } else {
             $lines += '**Runtime: FAIL or incomplete**'
           }
