@@ -14,6 +14,13 @@ use windows_core::{BSTR, Interface, Ref, Result, implement};
 const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
 const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
 
+const PROCESS_ID_PROPERTY: PROPERTYID = PROPERTYID(30002);
+const LOCALIZED_CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30004);
+const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
+const AUTOMATION_ID_PROPERTY: PROPERTYID = PROPERTYID(30011);
+const CLASS_NAME_PROPERTY: PROPERTYID = PROPERTYID(30012);
+const FRAMEWORK_ID_PROPERTY: PROPERTYID = PROPERTYID(30024);
+
 static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -45,12 +52,12 @@ unsafe fn create_event_cache(automation: &IUIAutomation) -> Result<IUIAutomation
     let cache = unsafe { automation.CreateCacheRequest()? };
 
     for property in [
-        UIA_ProcessIdPropertyId,
-        UIA_FrameworkIdPropertyId,
-        UIA_ClassNamePropertyId,
-        UIA_LocalizedControlTypePropertyId,
-        UIA_NamePropertyId,
-        UIA_AutomationIdPropertyId,
+        PROCESS_ID_PROPERTY,
+        FRAMEWORK_ID_PROPERTY,
+        CLASS_NAME_PROPERTY,
+        LOCALIZED_CONTROL_TYPE_PROPERTY,
+        NAME_PROPERTY,
+        AUTOMATION_ID_PROPERTY,
     ] {
         unsafe { cache.AddProperty(property).ok()? };
     }
