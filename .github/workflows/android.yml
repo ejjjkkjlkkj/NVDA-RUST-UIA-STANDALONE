@@ -61,17 +61,45 @@ jobs:
       - name: Setup latest Android command-line tools
         uses: android-actions/setup-android@v4
 
-      - name: Install Android 17 / API 37.0 preview SDK
+      - name: Install Android 17 / API 37 SDK and discover emulator image
+        id: android17
         shell: bash
         run: |
           set -euxo pipefail
           command -v sdkmanager
           sdkmanager --version
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install \
             "platforms;android-37.0" \
             "build-tools;37.0.0" \
             "platform-tools" \
+            "emulator" \
             --channel=3
+
+          SDK_LIST="$RUNNER_TEMP/sdkmanager-list.txt"
+          sdkmanager --list --channel=3 > "$SDK_LIST"
+          grep -E 'system-images;android-(37|37\.|CinnamonBun).*;x86_64' "$SDK_LIST" || true
+
+          IMAGE="$({
+            awk -F' *\\| *' '
+              $1 ~ /^system-images;android-(37([.][0-9A-Za-z._-]+)?|CinnamonBun);/ &&
+              $1 ~ /;x86_64$/ {
+                gsub(/^[ \t]+|[ \t]+$/, "", $1)
+                print $1
+              }
+            ' "$SDK_LIST"
+          } | grep -E ';(google_apis|google_apis_playstore|default);x86_64$' | sort -V | tail -n 1)"
+
+          if [[ -z "$IMAGE" ]]; then
+            echo "No Android 17 x86_64 emulator system image is currently published on Canary." >&2
+            echo "Available Android 17 image candidates:" >&2
+            grep -E 'system-images;.*(37|CinnamonBun).*;x86_64' "$SDK_LIST" >&2 || true
+            exit 1
+          fi
+
+          echo "ANDROID17_SYSTEM_IMAGE=$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          sdkmanager --install "$IMAGE" --channel=3
           sdkmanager --list_installed
           test -d "$ANDROID_SDK_ROOT/platforms/android-37.0"
 
@@ -86,42 +114,95 @@ jobs:
       - name: Enable KVM
         shell: bash
         run: |
+          set -euxo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm
 
-      - name: Real AccessibilityService test on Android 17 emulator
-        uses: reactivecircus/android-emulator-runner@v2.38.0
-        with:
-          # v2.38.0 does not yet natively understand the API 37.0 minor
-          # platform package. Keep its platform installer on 36.1 while using
-          # the actual Android 17 / API 37.0 system image installed from Canary.
-          api-level: 36.1
-          system-image-api-level: 37.0
-          channel: canary
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          script: |
-            set -euxo pipefail
-            RELEASE="$(adb shell getprop ro.build.version.release | tr -d '\r')"
-            SDK="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
-            echo "ANDROID_RELEASE=$RELEASE"
-            echo "ANDROID_SDK=$SDK"
-            test "$SDK" = "37"
-            APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
-            adb install -r "$APK"
-            adb shell settings put secure enabled_accessibility_services 'org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
-            adb shell settings put secure accessibility_enabled 1
-            adb logcat -c
-            adb shell am start -a android.settings.SETTINGS
+      - name: Create and boot exact Android 17 AVD
+        shell: bash
+        env:
+          ANDROID17_SYSTEM_IMAGE: ${{ steps.android17.outputs.image }}
+        run: |
+          set -euxo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+
+          echo no | avdmanager create avd \
+            --force \
+            --name nvda_android17 \
+            --package "$ANDROID17_SYSTEM_IMAGE" \
+            --device pixel_6
+
+          "$ANDROID_SDK_ROOT/emulator/emulator" \
+            -avd nvda_android17 \
+            -no-window \
+            -gpu swiftshader_indirect \
+            -no-snapshot \
+            -noaudio \
+            -no-boot-anim \
+            -accel on \
+            > platforms/android/emulator.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/android-emulator.pid"
+
+          adb wait-for-device
+          for attempt in $(seq 1 120); do
+            if [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+              break
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/android-emulator.pid")" 2>/dev/null; then
+              cat platforms/android/emulator.log >&2
+              exit 1
+            fi
             sleep 5
-            gradle -p platforms/android :app:connectedDebugAndroidTest --stacktrace
-            adb shell dumpsys accessibility | tee platforms/android/accessibility-dumpsys.txt
-            adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
-            grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
-            grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt
+          done
+
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
+          RELEASE="$(adb shell getprop ro.build.version.release | tr -d '\r')"
+          SDK="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+          CODENAME="$(adb shell getprop ro.build.version.codename | tr -d '\r')"
+          echo "ANDROID_RELEASE=$RELEASE" | tee platforms/android/android-version.txt
+          echo "ANDROID_SDK=$SDK" | tee -a platforms/android/android-version.txt
+          echo "ANDROID_CODENAME=$CODENAME" | tee -a platforms/android/android-version.txt
+          echo "ANDROID_IMAGE=$ANDROID17_SYSTEM_IMAGE" | tee -a platforms/android/android-version.txt
+          test "$SDK" = "37"
+
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+
+      - name: Real AccessibilityService runtime test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
+          adb install -r "$APK"
+          adb shell settings put secure enabled_accessibility_services 'org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
+          adb shell settings put secure accessibility_enabled 1
+          sleep 3
+
+          adb logcat -c
+          adb shell am start -a android.settings.SETTINGS
+          sleep 5
+
+          gradle -p platforms/android :app:connectedDebugAndroidTest --stacktrace
+          adb shell dumpsys accessibility | tee platforms/android/accessibility-dumpsys.txt
+          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
+
+          grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
+          grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
+          echo "ANDROID_17_ACCESSIBILITY_RUNTIME = PASS"
+
+      - name: Stop emulator
+        if: always()
+        shell: bash
+        run: |
+          adb emu kill || true
+          if [[ -f "$RUNNER_TEMP/android-emulator.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/android-emulator.pid")" 2>/dev/null || true
+          fi
 
       - name: Upload Android runtime evidence
         if: always()
@@ -129,6 +210,8 @@ jobs:
         with:
           name: android-17-accessibility-runtime-evidence
           path: |
+            platforms/android/android-version.txt
+            platforms/android/emulator.log
             platforms/android/accessibility-dumpsys.txt
             platforms/android/accessibility-logcat.txt
             platforms/android/app/build/reports/androidTests/**
