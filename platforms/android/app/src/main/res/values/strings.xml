@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Rust Screen Reader</string>
+    <string name="accessibility_service_name">Rust Screen Reader Service</string>
+    <string name="accessibility_service_description">Experimental Rust screen reader accessibility backend.</string>
+</resources>
