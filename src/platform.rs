@@ -3,6 +3,8 @@ pub enum BackendKind {
     WindowsUia,
     MacOsAccessibility,
     LinuxAtSpi2,
+    AndroidAccessibilityService,
+    IosAccessibilityClient,
     Unsupported,
 }
 
@@ -12,8 +14,24 @@ impl BackendKind {
             Self::WindowsUia => "Microsoft UI Automation (UIA)",
             Self::MacOsAccessibility => "macOS Accessibility (AXUIElement/AXObserver)",
             Self::LinuxAtSpi2 => "AT-SPI2 over D-Bus",
+            Self::AndroidAccessibilityService => {
+                "Android AccessibilityService / AccessibilityNodeInfo"
+            }
+            Self::IosAccessibilityClient => {
+                "iOS UIAccessibility / Accessibility framework (app-scoped)"
+            }
             Self::Unsupported => "unsupported accessibility backend",
         }
+    }
+
+    pub const fn is_system_screen_reader_capable(self) -> bool {
+        matches!(
+            self,
+            Self::WindowsUia
+                | Self::MacOsAccessibility
+                | Self::LinuxAtSpi2
+                | Self::AndroidAccessibilityService
+        )
     }
 
     pub const fn is_native_backend_implemented(self) -> bool {
@@ -26,6 +44,10 @@ pub const fn current_backend() -> BackendKind {
         BackendKind::WindowsUia
     } else if cfg!(target_os = "macos") {
         BackendKind::MacOsAccessibility
+    } else if cfg!(target_os = "android") {
+        BackendKind::AndroidAccessibilityService
+    } else if cfg!(target_os = "ios") {
+        BackendKind::IosAccessibilityClient
     } else if cfg!(target_os = "linux") {
         BackendKind::LinuxAtSpi2
     } else {
@@ -55,6 +77,23 @@ mod tests {
             "macOS Accessibility (AXUIElement/AXObserver)"
         );
         assert_eq!(BackendKind::LinuxAtSpi2.native_api(), "AT-SPI2 over D-Bus");
+        assert_eq!(
+            BackendKind::AndroidAccessibilityService.native_api(),
+            "Android AccessibilityService / AccessibilityNodeInfo"
+        );
+        assert_eq!(
+            BackendKind::IosAccessibilityClient.native_api(),
+            "iOS UIAccessibility / Accessibility framework (app-scoped)"
+        );
+    }
+
+    #[test]
+    fn system_screen_reader_capability_is_explicit() {
+        assert!(BackendKind::WindowsUia.is_system_screen_reader_capable());
+        assert!(BackendKind::MacOsAccessibility.is_system_screen_reader_capable());
+        assert!(BackendKind::LinuxAtSpi2.is_system_screen_reader_capable());
+        assert!(BackendKind::AndroidAccessibilityService.is_system_screen_reader_capable());
+        assert!(!BackendKind::IosAccessibilityClient.is_system_screen_reader_capable());
     }
 
     #[test]
@@ -62,5 +101,7 @@ mod tests {
         assert!(BackendKind::WindowsUia.is_native_backend_implemented());
         assert!(!BackendKind::MacOsAccessibility.is_native_backend_implemented());
         assert!(!BackendKind::LinuxAtSpi2.is_native_backend_implemented());
+        assert!(!BackendKind::AndroidAccessibilityService.is_native_backend_implemented());
+        assert!(!BackendKind::IosAccessibilityClient.is_native_backend_implemented());
     }
 }
