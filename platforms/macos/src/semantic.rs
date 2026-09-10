@@ -47,11 +47,7 @@ pub fn role_from_ax(native_role: &str, native_subrole: &str) -> Role {
     }
 }
 
-pub fn states_from_ax(
-    role: Role,
-    native_subrole: &str,
-    snapshot: AxStateSnapshot,
-) -> Vec<State> {
+pub fn states_from_ax(role: Role, native_subrole: &str, snapshot: AxStateSnapshot) -> Vec<State> {
     let mut states = Vec::new();
 
     if snapshot.focusable {
