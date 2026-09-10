@@ -5,7 +5,9 @@ use std::{
     time::Duration,
 };
 
-use nvda_rust_uia_standalone::parse_monitor_seconds;
+use nvda_rust_uia_standalone::{
+    AccessibilityEventKind, ElementSnapshot, format_event_line, parse_monitor_seconds,
+};
 use windows::Win32::*;
 use windows_core::{BSTR, Interface, Ref, Result, implement};
 
@@ -37,23 +39,27 @@ fn bstr_or_unavailable(value: Result<BSTR>) -> String {
         .unwrap_or_else(|_| "<unavailable>".to_string())
 }
 
-fn print_sender(kind: &str, sequence: u64, sender: Ref<IUIAutomationElement>) {
+fn print_sender(
+    kind: AccessibilityEventKind,
+    sequence: u64,
+    sender: Ref<IUIAutomationElement>,
+) {
     let Some(element) = sender.as_ref() else {
         eprintln!("{kind} #{sequence} | sender=NULL");
         return;
     };
 
     unsafe {
-        let name = bstr_or_unavailable(element.CurrentName());
-        let class_name = bstr_or_unavailable(element.CurrentClassName());
-        let framework = bstr_or_unavailable(element.CurrentFrameworkId());
-        let automation_id = bstr_or_unavailable(element.CurrentAutomationId());
-        let control_type = bstr_or_unavailable(element.CurrentLocalizedControlType());
-        let process_id = element.CurrentProcessId().unwrap_or_default();
+        let snapshot = ElementSnapshot {
+            process_id: element.CurrentProcessId().unwrap_or_default(),
+            framework: bstr_or_unavailable(element.CurrentFrameworkId()),
+            class_name: bstr_or_unavailable(element.CurrentClassName()),
+            role: bstr_or_unavailable(element.CurrentLocalizedControlType()),
+            name: bstr_or_unavailable(element.CurrentName()),
+            automation_id: bstr_or_unavailable(element.CurrentAutomationId()),
+        };
 
-        println!(
-            "{kind} #{sequence} | PID={process_id} | Framework={framework} | Class={class_name} | Role={control_type} | Name={name} | AutomationId={automation_id}"
-        );
+        println!("{}", format_event_line(kind, sequence, &snapshot));
     }
 }
 
@@ -63,7 +69,7 @@ struct FocusSink;
 impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
     fn HandleFocusChangedEvent(&self, sender: Ref<IUIAutomationElement>) -> Result<()> {
         let sequence = FOCUS_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        print_sender("FOCUS", sequence, sender);
+        print_sender(AccessibilityEventKind::Focus, sequence, sender);
         Ok(())
     }
 }
@@ -79,10 +85,14 @@ impl IUIAutomationEventHandler_Impl for AutomationSink_Impl {
     ) -> Result<()> {
         if eventid == TEXT_CHANGED_EVENT {
             let sequence = TEXT_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            print_sender("TEXT_CHANGED/UIA_20015", sequence, sender);
+            print_sender(AccessibilityEventKind::TextChanged, sequence, sender);
         } else if eventid == TEXT_SELECTION_CHANGED_EVENT {
             let sequence = TEXT_SELECTION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            print_sender("TEXT_SELECTION_CHANGED/UIA_20014", sequence, sender);
+            print_sender(
+                AccessibilityEventKind::TextSelectionChanged,
+                sequence,
+                sender,
+            );
         }
 
         Ok(())
