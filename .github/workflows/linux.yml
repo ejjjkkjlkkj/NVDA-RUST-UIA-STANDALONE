@@ -75,7 +75,7 @@ jobs:
           cargo clippy --manifest-path platforms/linux/Cargo.toml --locked -- -D warnings
           cargo test --manifest-path platforms/linux/Cargo.toml --locked
 
-      - name: Real AT-SPI2 event integration test
+      - name: Real AT-SPI2 semantic focus integration test
         shell: bash
         run: |
           set -euxo pipefail
@@ -95,6 +95,9 @@ jobs:
             grep -q "AT_SPI_CONNECTION = PASS" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_ROOT_CHILDREN =" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_EVENT #" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_SEMANTIC #" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_PRESENTATION =" platforms/linux/atspi-runtime.log
+            grep -Eq "AT_SPI_COUNTS total=[1-9][0-9]* focus=[1-9][0-9]*" platforms/linux/atspi-runtime.log
             grep -q "AT_SPI_RUNTIME = PASS" platforms/linux/atspi-runtime.log
             grep -q "GTK_ACCESSIBILITY_FIXTURE = PASS" platforms/linux/gtk-fixture.log
           '
