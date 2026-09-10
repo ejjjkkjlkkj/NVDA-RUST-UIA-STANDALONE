@@ -4,10 +4,7 @@ use axuielement::{
     ax_attribute::{AX_ROLE_ATTRIBUTE, AX_TITLE_ATTRIBUTE},
     prelude::*,
 };
-use nvda_rust_uia_standalone::{
-    presentation::focus_utterance,
-    semantic::AccessibleNode,
-};
+use nvda_rust_uia_standalone::{presentation::focus_utterance, semantic::AccessibleNode};
 
 mod semantic;
 
