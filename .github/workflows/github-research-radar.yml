@@ -33,51 +33,61 @@ jobs:
               {
                 name: 'Windows UI Automation / Rust',
                 repoQuery: 'UIAutomation accessibility Rust in:name,description,readme archived:false',
-                codeQuery: 'UIAutomationClient language:Rust'
+                codeQuery: 'UIAutomationClient language:Rust',
+                keywords: ['uiautomation', 'ui automation', 'accessibility', 'screen reader', 'rust']
               },
               {
                 name: 'Linux AT-SPI / Rust',
                 repoQuery: 'atspi Rust accessibility in:name,description,readme archived:false',
-                codeQuery: 'atspi language:Rust'
+                codeQuery: 'atspi language:Rust',
+                keywords: ['atspi', 'at-spi', 'accessibility', 'screen reader', 'rust']
               },
               {
                 name: 'Android AccessibilityService',
                 repoQuery: 'AccessibilityService screen reader Android in:name,description,readme archived:false',
-                codeQuery: 'TYPE_VIEW_ACCESSIBILITY_FOCUSED language:Java'
+                codeQuery: 'TYPE_VIEW_ACCESSIBILITY_FOCUSED language:Java',
+                keywords: ['accessibilityservice', 'accessibility', 'screen reader', 'android']
               },
               {
                 name: 'Android UIAutomator accessibility testing',
                 repoQuery: 'uiautomator accessibility Android in:name,description,readme archived:false',
-                codeQuery: 'UiDevice language:Kotlin'
+                codeQuery: 'UiDevice language:Kotlin',
+                keywords: ['uiautomator', 'ui automator', 'android', 'accessibility', 'testing']
               },
               {
                 name: 'macOS Accessibility API',
                 repoQuery: 'AXUIElement accessibility macOS in:name,description,readme archived:false',
-                codeQuery: 'AXUIElementCreateSystemWide language:Swift'
+                codeQuery: 'AXUIElementCreateSystemWide language:Swift',
+                keywords: ['axuielement', 'accessibility', 'macos', 'screen reader']
               },
               {
                 name: 'iOS VoiceOver / UIAccessibility',
                 repoQuery: 'UIAccessibility VoiceOver iOS in:name,description,readme archived:false',
-                codeQuery: 'UIAccessibility.post language:Swift'
+                codeQuery: 'UIAccessibility.post language:Swift',
+                keywords: ['uiaccessibility', 'voiceover', 'accessibility', 'ios']
               },
               {
                 name: 'Braille and screen-reader infrastructure',
                 repoQuery: 'braille screen reader accessibility Rust in:name,description,readme archived:false',
-                codeQuery: 'braille language:Rust'
+                codeQuery: 'braille language:Rust',
+                keywords: ['braille', 'screen reader', 'accessibility', 'rust']
               },
               {
                 name: 'Accessible virtualization / QEMU',
                 repoQuery: 'qemu accessibility in:name,description,readme archived:false',
-                codeQuery: 'qemu accessibility'
+                codeQuery: 'qemu accessibility',
+                keywords: ['qemu', 'accessibility', 'screen reader', 'virtualization']
               },
               {
                 name: 'AOSP accessibility and screen readers',
                 repoQuery: 'Android accessibility screen reader AOSP in:name,description,readme archived:false',
-                codeQuery: 'AccessibilityService language:Java'
+                codeQuery: 'AccessibilityService language:Java',
+                keywords: ['aosp', 'android', 'accessibilityservice', 'accessibility', 'screen reader']
               }
             ];
 
             const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+            const noisyRepository = /(?:^|[-_])(awesome|stars?|starred|bookmarks?|collection|list)(?:[-_]|$)|awesome[-_ ]?(?:stars?|repos?|list)|my[-_ ]?stars?/i;
 
             function retryDelayMs(error, attempt) {
               const headers = error.response?.headers || {};
@@ -127,6 +137,55 @@ jobs:
               throw lastError;
             }
 
+            function keywordScore(topic, repo) {
+              const haystack = `${repo.fullName} ${repo.description}`.toLowerCase();
+              return topic.keywords.reduce(
+                (score, keyword) => score + (haystack.includes(keyword.toLowerCase()) ? 1 : 0),
+                0
+              );
+            }
+
+            function rankTopic(topic, result) {
+              const codeHits = new Map();
+              for (const item of result.code) {
+                codeHits.set(item.repository, (codeHits.get(item.repository) || 0) + 1);
+              }
+
+              result.repositories = result.repositories
+                .filter(repo => !noisyRepository.test(repo.fullName))
+                .map(repo => ({
+                  ...repo,
+                  codeHits: codeHits.get(repo.fullName) || 0,
+                  keywordHits: keywordScore(topic, repo)
+                }))
+                .sort((a, b) => {
+                  const scoreA = a.codeHits * 100 + a.keywordHits * 10 + Math.min(9, Math.log10(a.stars + 1));
+                  const scoreB = b.codeHits * 100 + b.keywordHits * 10 + Math.min(9, Math.log10(b.stars + 1));
+                  return scoreB - scoreA || b.updatedAt.localeCompare(a.updatedAt);
+                })
+                .slice(0, 8);
+
+              const repositoryByName = new Map(result.repositories.map(repo => [repo.fullName, repo]));
+              result.recommended = [...codeHits.entries()]
+                .map(([fullName, hits]) => {
+                  const repo = repositoryByName.get(fullName);
+                  return {
+                    fullName,
+                    codeHits: hits,
+                    stars: repo?.stars ?? null,
+                    language: repo?.language ?? '',
+                    description: repo?.description ?? '',
+                    url: repo?.url ?? `https://github.com/${fullName}`,
+                    reason: repo
+                      ? `${hits} code hit(s), ${repo.keywordHits} topic keyword hit(s)`
+                      : `${hits} direct code hit(s)`
+                  };
+                })
+                .filter(candidate => !noisyRepository.test(candidate.fullName))
+                .sort((a, b) => b.codeHits - a.codeHits || (b.stars || 0) - (a.stars || 0))
+                .slice(0, 5);
+            }
+
             const generatedAt = new Date().toISOString();
             const report = {
               generatedAt,
@@ -135,6 +194,7 @@ jobs:
               stats: {
                 repositoryMatches: 0,
                 codeMatches: 0,
+                recommendedCandidates: 0,
                 searchErrors: 0
               }
             };
@@ -148,6 +208,7 @@ jobs:
                 codeQuery: topic.codeQuery,
                 repositories: [],
                 code: [],
+                recommended: [],
                 errors: []
               };
 
@@ -172,9 +233,7 @@ jobs:
                     language: repo.language || '',
                     updatedAt: repo.updated_at,
                     archived: repo.archived
-                  }))
-                  .sort((a, b) => b.stars - a.stars || b.updatedAt.localeCompare(a.updatedAt))
-                  .slice(0, 8);
+                  }));
               } catch (error) {
                 result.errors.push(`repository search: ${error.message}`);
               }
@@ -207,11 +266,14 @@ jobs:
               } catch (error) {
                 result.errors.push(`code search: ${error.message}`);
               }
+
+              rankTopic(topic, result);
             }
 
             for (const topic of report.topics) {
               report.stats.repositoryMatches += topic.repositories.length;
               report.stats.codeMatches += topic.code.length;
+              report.stats.recommendedCandidates += topic.recommended.length;
               report.stats.searchErrors += topic.errors.length;
             }
 
@@ -220,11 +282,12 @@ jobs:
             lines.push('');
             lines.push(`Generated: ${generatedAt}`);
             lines.push('');
-            lines.push(`Repository matches: **${report.stats.repositoryMatches}**`);
+            lines.push(`Repository matches after noise filtering: **${report.stats.repositoryMatches}**`);
             lines.push(`Code matches: **${report.stats.codeMatches}**`);
+            lines.push(`Recommended candidates: **${report.stats.recommendedCandidates}**`);
             lines.push(`Search errors: **${report.stats.searchErrors}**`);
             lines.push('');
-            lines.push('This report searches public GitHub projects for implementation ideas, test strategies, and reusable accessibility patterns relevant to this repository. Results are references only; nothing is copied or merged automatically.');
+            lines.push('Candidates are ranked primarily by direct code evidence, then topic-keyword relevance and repository signal. Results are references only; nothing is copied or merged automatically.');
             lines.push('');
 
             for (const topic of report.topics) {
@@ -234,20 +297,34 @@ jobs:
               lines.push(`Code query: \`${topic.codeQuery}\``);
               lines.push('');
 
+              if (topic.recommended.length) {
+                lines.push('### Recommended candidates');
+                lines.push('');
+                lines.push('| Repository | Code hits | Reason |');
+                lines.push('| --- | ---: | --- |');
+                for (const candidate of topic.recommended) {
+                  lines.push(`| [${clean(candidate.fullName)}](${candidate.url}) | ${candidate.codeHits} | ${clean(candidate.reason)} |`);
+                }
+                lines.push('');
+              }
+
               if (topic.repositories.length) {
-                lines.push('| Repository | Stars | Language | Updated | Description |');
-                lines.push('| --- | ---: | --- | --- | --- |');
+                lines.push('### Repository matches');
+                lines.push('');
+                lines.push('| Repository | Code hits | Stars | Language | Updated | Description |');
+                lines.push('| --- | ---: | ---: | --- | --- | --- |');
                 for (const repo of topic.repositories) {
-                  lines.push(`| [${clean(repo.fullName)}](${repo.url}) | ${repo.stars} | ${clean(repo.language)} | ${clean(repo.updatedAt)} | ${clean(repo.description)} |`);
+                  lines.push(`| [${clean(repo.fullName)}](${repo.url}) | ${repo.codeHits} | ${repo.stars} | ${clean(repo.language)} | ${clean(repo.updatedAt)} | ${clean(repo.description)} |`);
                 }
                 lines.push('');
               } else {
-                lines.push('_No repository matches._');
+                lines.push('_No useful repository matches after filtering._');
                 lines.push('');
               }
 
               if (topic.code.length) {
-                lines.push('Useful code matches:');
+                lines.push('### Direct code matches');
+                lines.push('');
                 for (const item of topic.code) {
                   lines.push(`- [${clean(item.repository)} — ${clean(item.path)}](${item.url})`);
                 }
