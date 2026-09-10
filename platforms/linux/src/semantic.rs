@@ -28,7 +28,9 @@ pub fn role_from_atspi(role: AtspiRole, states: StateSet) -> Role {
         AtspiRole::TreeItem => Role::TreeItem,
         AtspiRole::Table | AtspiRole::TreeTable => Role::Table,
         AtspiRole::TableRow => Role::Row,
-        AtspiRole::TableCell | AtspiRole::TableColumnHeader | AtspiRole::TableRowHeader => Role::Cell,
+        AtspiRole::TableCell | AtspiRole::TableColumnHeader | AtspiRole::TableRowHeader => {
+            Role::Cell
+        }
         AtspiRole::Link => Role::Link,
         AtspiRole::Image | AtspiRole::ImageMap => Role::Image,
         AtspiRole::Slider => Role::Slider,
@@ -105,21 +107,39 @@ mod tests {
 
     #[test]
     fn maps_core_roles() {
-        assert_eq!(role_from_atspi(AtspiRole::Button, StateSet::empty()), Role::Button);
-        assert_eq!(role_from_atspi(AtspiRole::Heading, StateSet::empty()), Role::Heading);
-        assert_eq!(role_from_atspi(AtspiRole::Terminal, StateSet::empty()), Role::Terminal);
+        assert_eq!(
+            role_from_atspi(AtspiRole::Button, StateSet::empty()),
+            Role::Button
+        );
+        assert_eq!(
+            role_from_atspi(AtspiRole::Heading, StateSet::empty()),
+            Role::Heading
+        );
+        assert_eq!(
+            role_from_atspi(AtspiRole::Terminal, StateSet::empty()),
+            Role::Terminal
+        );
     }
 
     #[test]
     fn text_role_uses_editable_state() {
         let editable = StateSet::new(AtspiState::Editable);
-        assert_eq!(role_from_atspi(AtspiRole::Text, editable), Role::EditableText);
-        assert_eq!(role_from_atspi(AtspiRole::Text, StateSet::empty()), Role::StaticText);
+        assert_eq!(
+            role_from_atspi(AtspiRole::Text, editable),
+            Role::EditableText
+        );
+        assert_eq!(
+            role_from_atspi(AtspiRole::Text, StateSet::empty()),
+            Role::StaticText
+        );
     }
 
     #[test]
     fn password_state_is_explicit() {
-        let states = states_from_atspi(AtspiRole::PasswordText, StateSet::new(AtspiState::Focusable));
+        let states = states_from_atspi(
+            AtspiRole::PasswordText,
+            StateSet::new(AtspiState::Focusable),
+        );
         assert!(states.contains(&State::Password));
         assert!(states.contains(&State::Focusable));
     }
