@@ -4,6 +4,12 @@ use axuielement::{
     ax_attribute::{AX_ROLE_ATTRIBUTE, AX_TITLE_ATTRIBUTE},
     prelude::*,
 };
+use nvda_rust_uia_standalone::{
+    presentation::focus_utterance,
+    semantic::AccessibleNode,
+};
+
+mod semantic;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let api_enabled = api_enabled();
@@ -55,17 +61,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     if let Some(element) = element {
-        let role = element
+        let native_role = element
             .string_attribute(AX_ROLE_ATTRIBUTE)?
             .unwrap_or_default();
         let title = element
             .string_attribute(AX_TITLE_ATTRIBUTE)?
             .unwrap_or_default();
         let actions = element.action_names()?;
+        let process_id = i64::from(element.pid()?);
+        let role = semantic::role_from_ax(&native_role);
 
-        println!("AX_FOCUSED_ROLE = {role}");
+        let node = AccessibleNode {
+            process_id,
+            platform_id: format!("ax:{process_id}:{native_role}"),
+            role,
+            native_role: native_role.clone(),
+            name: title.clone(),
+            ..AccessibleNode::default()
+        };
+
+        println!("AX_FOCUSED_ROLE = {native_role}");
+        println!("AX_SEMANTIC_ROLE = {role}");
         println!("AX_FOCUSED_TITLE = {title}");
         println!("AX_FOCUSED_ACTIONS = {}", actions.len());
+
+        if let Some(utterance) = focus_utterance(&node) {
+            println!("AX_PRESENTATION = {}", utterance.text);
+        }
     } else {
         println!("AX_FOCUSED_ELEMENT = NONE");
     }
