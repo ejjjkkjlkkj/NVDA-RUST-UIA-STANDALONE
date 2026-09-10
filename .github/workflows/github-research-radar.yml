@@ -1,0 +1,196 @@
+name: GitHub Research Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-research-radar.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-research-radar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    name: Search GitHub for useful accessibility work
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Search repositories and code
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            const topics = [
+              {
+                name: 'Windows UI Automation / Rust',
+                repoQuery: 'UIAutomation screen reader rust windows',
+                codeQuery: 'UIAutomationClient language:Rust'
+              },
+              {
+                name: 'Linux AT-SPI / Rust',
+                repoQuery: 'atspi screen reader rust accessibility',
+                codeQuery: 'AccessibilityConnection language:Rust'
+              },
+              {
+                name: 'Android AccessibilityService',
+                repoQuery: 'AccessibilityService screen reader android',
+                codeQuery: 'TYPE_VIEW_ACCESSIBILITY_FOCUSED AccessibilityService language:Java'
+              },
+              {
+                name: 'Android UIAutomator accessibility testing',
+                repoQuery: 'uiautomator accessibility android testing',
+                codeQuery: 'UiDevice InstrumentationRegistry language:Kotlin'
+              },
+              {
+                name: 'macOS Accessibility API',
+                repoQuery: 'AXUIElement screen reader macOS accessibility',
+                codeQuery: 'AXUIElementCreateSystemWide language:Swift'
+              },
+              {
+                name: 'iOS VoiceOver / UIAccessibility',
+                repoQuery: 'UIAccessibility VoiceOver testing iOS',
+                codeQuery: 'UIAccessibility.post language:Swift'
+              },
+              {
+                name: 'Braille and screen-reader infrastructure',
+                repoQuery: 'braille screen reader accessibility rust',
+                codeQuery: 'braille display language:Rust'
+              },
+              {
+                name: 'Accessible virtualization / QEMU',
+                repoQuery: 'qemu accessibility screen reader GUI',
+                codeQuery: 'accessibility qemu'
+              },
+              {
+                name: 'AOSP accessibility and screen readers',
+                repoQuery: 'AOSP accessibility screen reader android',
+                codeQuery: 'AccessibilityService AOSP'
+              }
+            ];
+
+            const generatedAt = new Date().toISOString();
+            const report = {
+              generatedAt,
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              topics: []
+            };
+
+            const clean = value => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
+
+            for (const topic of topics) {
+              const result = {
+                name: topic.name,
+                repositoryQuery: topic.repoQuery,
+                codeQuery: topic.codeQuery,
+                repositories: [],
+                code: [],
+                errors: []
+              };
+
+              try {
+                const repos = await github.rest.search.repos({
+                  q: topic.repoQuery,
+                  sort: 'updated',
+                  order: 'desc',
+                  per_page: 8
+                });
+                result.repositories = repos.data.items.map(repo => ({
+                  fullName: repo.full_name,
+                  url: repo.html_url,
+                  description: repo.description || '',
+                  stars: repo.stargazers_count,
+                  language: repo.language || '',
+                  updatedAt: repo.updated_at,
+                  archived: repo.archived
+                }));
+              } catch (error) {
+                result.errors.push(`repository search: ${error.message}`);
+              }
+
+              try {
+                const code = await github.rest.search.code({
+                  q: topic.codeQuery,
+                  per_page: 8
+                });
+                result.code = code.data.items.map(item => ({
+                  repository: item.repository.full_name,
+                  path: item.path,
+                  url: item.html_url
+                }));
+              } catch (error) {
+                result.errors.push(`code search: ${error.message}`);
+              }
+
+              report.topics.push(result);
+            }
+
+            const lines = [];
+            lines.push('# GitHub Research Radar');
+            lines.push('');
+            lines.push(`Generated: ${generatedAt}`);
+            lines.push('');
+            lines.push('This report searches public GitHub projects for implementation ideas, test strategies, and reusable accessibility patterns relevant to this repository. Results are references only; nothing is copied or merged automatically.');
+            lines.push('');
+
+            for (const topic of report.topics) {
+              lines.push(`## ${topic.name}`);
+              lines.push('');
+              lines.push(`Repository query: \`${topic.repositoryQuery}\``);
+              lines.push(`Code query: \`${topic.codeQuery}\``);
+              lines.push('');
+
+              if (topic.repositories.length) {
+                lines.push('| Repository | Stars | Language | Updated | Description |');
+                lines.push('| --- | ---: | --- | --- | --- |');
+                for (const repo of topic.repositories) {
+                  lines.push(`| [${clean(repo.fullName)}](${repo.url}) | ${repo.stars} | ${clean(repo.language)} | ${clean(repo.updatedAt)} | ${clean(repo.description)} |`);
+                }
+                lines.push('');
+              } else {
+                lines.push('_No repository matches._');
+                lines.push('');
+              }
+
+              if (topic.code.length) {
+                lines.push('Useful code matches:');
+                for (const item of topic.code) {
+                  lines.push(`- [${clean(item.repository)} — ${clean(item.path)}](${item.url})`);
+                }
+                lines.push('');
+              }
+
+              if (topic.errors.length) {
+                lines.push('Search warnings:');
+                for (const error of topic.errors) {
+                  lines.push(`- ${clean(error)}`);
+                }
+                lines.push('');
+              }
+            }
+
+            const markdown = `${lines.join('\n')}\n`;
+            fs.mkdirSync('research', { recursive: true });
+            fs.writeFileSync('research/github-radar.md', markdown);
+            fs.writeFileSync('research/github-radar.json', JSON.stringify(report, null, 2));
+
+            await core.summary.addRaw(markdown).write();
+
+      - name: Upload research report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: github-research-radar
+          path: |
+            research/github-radar.md
+            research/github-radar.json
+          if-no-files-found: error
+          retention-days: 30
