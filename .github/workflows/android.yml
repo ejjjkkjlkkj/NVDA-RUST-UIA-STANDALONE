@@ -169,6 +169,8 @@ jobs:
           set -euxo pipefail
           APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
           COMPONENT='org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
+          FIXTURE='org.nvdarust.screenreader/.AccessibilityFixtureActivity'
+          SECRET='android-runtime-secret'
 
           adb install -r "$APK"
           adb logcat -c
@@ -194,11 +196,34 @@ jobs:
           done
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys-pre.txt
 
-          adb shell am start -a android.settings.SETTINGS
-          sleep 5
-          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat-pre.txt
+          for attempt in $(seq 1 30); do
+            adb logcat -d -s RustScreenReader:I '*:S' > platforms/android/accessibility-logcat-pre.txt
+            if grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat-pre.txt; then
+              break
+            fi
+            sleep 1
+          done
+          grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat-pre.txt
+
+          adb shell am start -W -n "$FIXTURE"
+          for attempt in $(seq 1 30); do
+            adb logcat -d -s RustScreenReader:I '*:S' > platforms/android/accessibility-logcat-pre.txt
+            if grep -q 'EVENT type=' platforms/android/accessibility-logcat-pre.txt \
+              && grep -q 'password=true' platforms/android/accessibility-logcat-pre.txt; then
+              break
+            fi
+            sleep 1
+          done
+
+          cat platforms/android/accessibility-logcat-pre.txt
           grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat-pre.txt
           grep -q 'EVENT type=' platforms/android/accessibility-logcat-pre.txt
+          grep -q 'password=true' platforms/android/accessibility-logcat-pre.txt
+          grep -q '<password>' platforms/android/accessibility-logcat-pre.txt
+          if grep -Fq "$SECRET" platforms/android/accessibility-logcat-pre.txt; then
+            echo "PASSWORD_LEAK_DETECTED_PRE_INSTRUMENTATION" >&2
+            exit 1
+          fi
           echo "ANDROID_17_ACCESSIBILITY_RUNTIME_PRE_INSTRUMENTATION = PASS"
 
       - name: Run AndroidX instrumentation tests
@@ -213,9 +238,9 @@ jobs:
           set -euxo pipefail
           APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
           COMPONENT='org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
+          FIXTURE='org.nvdarust.screenreader/.AccessibilityFixtureActivity'
+          SECRET='android-runtime-secret'
 
-          # Android instrumentation may uninstall or force-stop the target app.
-          # Reinstall it before proving that the service can reconnect afterward.
           adb install -r "$APK"
           adb logcat -c
           adb shell settings put secure enabled_accessibility_services "$COMPONENT"
@@ -235,12 +260,34 @@ jobs:
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-post.txt
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
 
-          adb shell am start -a android.settings.SETTINGS
-          sleep 5
-          adb logcat -d -s RustScreenReader:I '*:S' | tee platforms/android/accessibility-logcat.txt
+          for attempt in $(seq 1 30); do
+            adb logcat -d -s RustScreenReader:I '*:S' > platforms/android/accessibility-logcat.txt
+            if grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt; then
+              break
+            fi
+            sleep 1
+          done
+          grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
 
+          adb shell am start -W -n "$FIXTURE"
+          for attempt in $(seq 1 30); do
+            adb logcat -d -s RustScreenReader:I '*:S' > platforms/android/accessibility-logcat.txt
+            if grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt \
+              && grep -q 'password=true' platforms/android/accessibility-logcat.txt; then
+              break
+            fi
+            sleep 1
+          done
+
+          cat platforms/android/accessibility-logcat.txt
           grep -q 'SERVICE_CONNECTED' platforms/android/accessibility-logcat.txt
           grep -q 'EVENT type=' platforms/android/accessibility-logcat.txt
+          grep -q 'password=true' platforms/android/accessibility-logcat.txt
+          grep -q '<password>' platforms/android/accessibility-logcat.txt
+          if grep -Fq "$SECRET" platforms/android/accessibility-logcat.txt; then
+            echo "PASSWORD_LEAK_DETECTED_POST_INSTRUMENTATION" >&2
+            exit 1
+          fi
           echo "ANDROID_17_ACCESSIBILITY_RUNTIME = PASS"
 
       - name: Stop emulator
