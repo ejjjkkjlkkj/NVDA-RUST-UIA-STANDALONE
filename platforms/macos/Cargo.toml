@@ -1,0 +1,14 @@
+[package]
+name = "nvda-rust-ax-macos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axuielement = { version = "=0.9.1", features = ["async"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
