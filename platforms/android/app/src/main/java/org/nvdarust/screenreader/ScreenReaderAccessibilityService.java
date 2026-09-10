@@ -68,8 +68,7 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
     private void logEvent(AccessibilityEvent event, AccessibilityNodeInfo source) {
         CharSequence packageName = event.getPackageName();
         CharSequence className = event.getClassName();
-        CharSequence text = event.getText() == null ? "" : event.getText().toString();
-        CharSequence description = event.getContentDescription();
+        boolean password = event.isPassword();
 
         String viewId = source == null ? "" : valueOf(source.getViewIdResourceName());
         String nodeClass = source == null ? "" : valueOf(source.getClassName());
@@ -77,7 +76,6 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
         String nodeDescription = source == null ? "" : valueOf(source.getContentDescription());
         String bounds = "";
         boolean editable = false;
-        boolean password = false;
         boolean checkable = false;
         boolean checked = false;
         boolean selected = false;
@@ -88,12 +86,17 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
             source.getBoundsInScreen(rect);
             bounds = rect.flattenToString();
             editable = source.isEditable();
-            password = source.isPassword();
+            password |= source.isPassword();
             checkable = source.isCheckable();
             checked = source.isChecked();
             selected = source.isSelected();
             enabled = source.isEnabled();
         }
+
+        String eventText = password ? "<password>" : valueOf(event.getText());
+        String eventDescription = password ? "<password>" : valueOf(event.getContentDescription());
+        String safeNodeText = password ? "<password>" : nodeText;
+        String safeNodeDescription = password ? "<password>" : nodeDescription;
 
         Log.i(
                 TAG,
@@ -103,10 +106,10 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
                         + " class=" + className
                         + " nodeClass=" + nodeClass
                         + " viewId=" + viewId
-                        + " text=" + text
-                        + " nodeText=" + (password ? "<password>" : nodeText)
-                        + " description=" + description
-                        + " nodeDescription=" + nodeDescription
+                        + " text=" + eventText
+                        + " nodeText=" + safeNodeText
+                        + " description=" + eventDescription
+                        + " nodeDescription=" + safeNodeDescription
                         + " editable=" + editable
                         + " password=" + password
                         + " checkable=" + checkable
@@ -132,8 +135,8 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
         Log.i(TAG, "SPEAK result=" + result + " text=" + text);
     }
 
-    private static String presentationText(AccessibilityEvent event, AccessibilityNodeInfo source) {
-        if (source != null && source.isPassword()) {
+    static String presentationText(AccessibilityEvent event, AccessibilityNodeInfo source) {
+        if (event.isPassword() || (source != null && source.isPassword())) {
             return "password field";
         }
 
@@ -173,6 +176,10 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
     }
 
     private static String valueOf(CharSequence value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private static String valueOf(Object value) {
         return value == null ? "" : value.toString();
     }
 
