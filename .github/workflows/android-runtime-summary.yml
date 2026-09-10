@@ -1,0 +1,123 @@
+name: Android Runtime Evidence Summary
+
+on:
+  workflow_run:
+    workflows: ["Android"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: android-runtime-summary-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  summarize:
+    name: Analyze Android runtime proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download Android runtime evidence
+        id: evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: android-17-accessibility-runtime-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: platforms/android
+
+      - name: Generate JSON and JUnit summary
+        if: always()
+        shell: bash
+        env:
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euxo pipefail
+          python3 platforms/android/ci/runtime_evidence_summary.py \
+            --root platforms/android \
+            --json platforms/android/runtime-summary.json \
+            --junit platforms/android/runtime-summary.junit.xml \
+            --job-status "$UPSTREAM_CONCLUSION" \
+            --enforce-on-success
+
+      - name: Publish readable job summary
+        if: always()
+        shell: bash
+        env:
+          UPSTREAM_RUN: ${{ github.event.workflow_run.html_url }}
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("platforms/android/runtime-summary.json")
+          lines = [
+              "# Android Runtime Evidence Summary",
+              "",
+              f"Upstream Android run: {os.environ.get('UPSTREAM_RUN', '')}",
+              f"Upstream conclusion: **{os.environ.get('UPSTREAM_CONCLUSION', 'unknown')}**",
+              "",
+          ]
+          if path.exists():
+              data = json.loads(path.read_text(encoding="utf-8"))
+              lines.extend([
+                  f"Runtime evidence: **{'PASS' if data.get('overallPass') else 'FAIL'}**",
+                  f"Required checks: **{data.get('requiredChecksPassed', 0)}/{data.get('requiredChecks', 0)}**",
+                  "",
+                  "| Check | Result |",
+                  "| --- | --- |",
+              ])
+              for check in data.get("checks", []):
+                  if check.get("required"):
+                      lines.append(f"| `{check.get('id', '')}` | {'PASS' if check.get('passed') else 'FAIL'} |")
+          else:
+              lines.append("Runtime summary could not be generated.")
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload machine-readable runtime summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-runtime-machine-summary-${{ github.event.workflow_run.id }}
+          path: |
+            platforms/android/runtime-summary.json
+            platforms/android/runtime-summary.junit.xml
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce upstream runtime result
+        if: always()
+        shell: bash
+        env:
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          upstream = os.environ.get("UPSTREAM_CONCLUSION", "unknown")
+          path = Path("platforms/android/runtime-summary.json")
+          if not path.exists():
+              raise SystemExit("Android runtime summary is missing")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          if upstream != "success":
+              raise SystemExit(f"Upstream Android workflow conclusion is {upstream}")
+          if not data.get("overallPass"):
+              raise SystemExit("Android runtime evidence did not satisfy all required checks")
+          print("ANDROID_RUNTIME_MACHINE_SUMMARY = PASS")
+          PY
