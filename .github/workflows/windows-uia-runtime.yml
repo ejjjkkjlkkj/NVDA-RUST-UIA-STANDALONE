@@ -1,0 +1,273 @@
+name: Windows UIA Runtime
+
+on:
+  push:
+    branches:
+      - main
+      - automation/windows-uia-runtime
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-uia-runtime.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-uia-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-uia-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Controlled UIA event and cache proof
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustc -vV
+          cargo -V
+          cargo build --release --locked
+
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          if (-not (Test-Path $exe)) {
+            throw "Windows release binary missing: $exe"
+          }
+
+      - name: Prove UIA runtime with controlled WinForms fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-uia-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture |
+            Format-List |
+            Out-File -FilePath (Join-Path $evidence 'windows-version.txt') -Encoding utf8
+
+          $fixturePath = Join-Path $evidence 'fixture.ps1'
+          @'
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+
+          [System.Windows.Forms.Application]::EnableVisualStyles()
+
+          $form = New-Object System.Windows.Forms.Form
+          $form.Text = 'NVDA Rust UIA Runtime Fixture'
+          $form.Name = 'NvdaRustUiaRuntimeFixture'
+          $form.StartPosition = 'CenterScreen'
+          $form.TopMost = $true
+          $form.Width = 560
+          $form.Height = 220
+
+          $label = New-Object System.Windows.Forms.Label
+          $label.Text = 'Controlled UI Automation fixture'
+          $label.Name = 'RuntimeLabel'
+          $label.SetBounds(20, 20, 480, 30)
+
+          $textBox = New-Object System.Windows.Forms.TextBox
+          $textBox.Name = 'RuntimeTextBox'
+          $textBox.AccessibleName = 'Runtime editable text'
+          $textBox.Text = 'initial text'
+          $textBox.SetBounds(20, 65, 480, 30)
+
+          $button = New-Object System.Windows.Forms.Button
+          $button.Name = 'RuntimeButton'
+          $button.AccessibleName = 'Runtime action button'
+          $button.Text = 'Runtime action'
+          $button.SetBounds(20, 110, 180, 35)
+
+          $form.Controls.Add($label)
+          $form.Controls.Add($textBox)
+          $form.Controls.Add($button)
+
+          $script:step = 0
+          $timer = New-Object System.Windows.Forms.Timer
+          $timer.Interval = 700
+          $timer.Add_Tick({
+            switch ($script:step) {
+              0 {
+                $form.Activate()
+                $textBox.Focus() | Out-Null
+              }
+              1 {
+                $textBox.Text = 'alpha beta'
+                $textBox.SelectionStart = $textBox.Text.Length
+              }
+              2 {
+                $textBox.Select(0, 5)
+              }
+              3 {
+                $button.Focus() | Out-Null
+              }
+              4 {
+                $textBox.Focus() | Out-Null
+                $textBox.AppendText(' gamma')
+              }
+              5 {
+                $textBox.Select(6, 4)
+              }
+              default {
+                $timer.Stop()
+                $form.Close()
+              }
+            }
+            $script:step++
+          })
+
+          $form.Add_Shown({
+            $form.Activate()
+            $timer.Start()
+          })
+
+          [System.Windows.Forms.Application]::Run($form)
+          '@ | Set-Content -Path $fixturePath -Encoding utf8
+
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          $stdout = Join-Path $evidence 'screen-reader.stdout.txt'
+          $stderr = Join-Path $evidence 'screen-reader.stderr.txt'
+
+          $reader = Start-Process \
+            -FilePath $exe \
+            -ArgumentList '12' \
+            -RedirectStandardOutput $stdout \
+            -RedirectStandardError $stderr \
+            -PassThru
+
+          Start-Sleep -Seconds 2
+
+          $fixture = Start-Process \
+            -FilePath 'powershell.exe' \
+            -ArgumentList '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $fixturePath \
+            -Wait \
+            -PassThru
+
+          if ($fixture.ExitCode -ne 0) {
+            throw "WinForms fixture failed with exit code $($fixture.ExitCode)"
+          }
+
+          if (-not $reader.WaitForExit(20000)) {
+            $reader.Kill()
+            throw 'UIA monitor did not exit within the expected time'
+          }
+
+          Start-Sleep -Milliseconds 500
+          $reader.Refresh()
+          if ($reader.ExitCode -ne 0) {
+            throw "UIA monitor failed with exit code $($reader.ExitCode)"
+          }
+
+          Write-Host '===== UIA STDOUT ====='
+          Get-Content $stdout
+          Write-Host '===== UIA STDERR ====='
+          if (Test-Path $stderr) {
+            Get-Content $stderr
+          }
+
+          $log = Get-Content $stdout -Raw
+          foreach ($marker in @(
+            'UIA_NATIVE_EVENTS_INIT = PASS',
+            'UIA_NATIVE_EVENTS_RUNTIME = PASS',
+            'UIA_EVENT_PROPERTY_CACHE = ENABLED'
+          )) {
+            if (-not $log.Contains($marker)) {
+              throw "Missing runtime proof marker: $marker"
+            }
+          }
+
+          $counts = [regex]::Match(
+            $log,
+            'COUNTS \| focus=(\d+) \| text_changed=(\d+) \| text_selection=(\d+)'
+          )
+          if (-not $counts.Success) {
+            throw 'Unable to parse UIA event counts'
+          }
+
+          $focus = [int64]$counts.Groups[1].Value
+          $textChanged = [int64]$counts.Groups[2].Value
+          $textSelection = [int64]$counts.Groups[3].Value
+          if ($focus -lt 1) {
+            throw 'No real UIA focus event was observed'
+          }
+
+          $cache = [regex]::Match(
+            $log,
+            'UIA_EVENT_CACHE_COUNTS \| full_hit_events=(\d+) \| fallback_properties=(\d+)'
+          )
+          if (-not $cache.Success) {
+            throw 'Unable to parse UIA event-cache metrics'
+          }
+
+          $fullHitEvents = [int64]$cache.Groups[1].Value
+          $fallbackProperties = [int64]$cache.Groups[2].Value
+          if ($fullHitEvents -lt 1) {
+            throw 'No event had a complete UIA cached-property hit'
+          }
+
+          $summary = [ordered]@{
+            schemaVersion = 1
+            platform = 'windows'
+            runtimePass = $true
+            focusEvents = $focus
+            textChangedEvents = $textChanged
+            textSelectionEvents = $textSelection
+            cacheFullHitEvents = $fullHitEvents
+            cacheFallbackProperties = $fallbackProperties
+          }
+          $summary |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -Path (Join-Path $evidence 'runtime-summary.json') -Encoding utf8
+
+          "WINDOWS_UIA_RUNTIME = PASS | focus=$focus | text_changed=$textChanged | text_selection=$textSelection | cache_full_hits=$fullHitEvents | cache_fallback_properties=$fallbackProperties" |
+            Tee-Object -FilePath (Join-Path $evidence 'result.txt')
+
+      - name: Publish runtime summary
+        if: always()
+        shell: pwsh
+        run: |
+          $summaryPath = Join-Path $PWD 'windows-uia-evidence\runtime-summary.json'
+          $lines = @('# Windows UIA Runtime Proof', '')
+          if (Test-Path $summaryPath) {
+            $data = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            $lines += '**Runtime: PASS**'
+            $lines += ''
+            $lines += "- Focus events: $($data.focusEvents)"
+            $lines += "- Text changed events: $($data.textChangedEvents)"
+            $lines += "- Text selection events: $($data.textSelectionEvents)"
+            $lines += "- Complete cached-property event hits: $($data.cacheFullHitEvents)"
+            $lines += "- Cached-property fallbacks: $($data.cacheFallbackProperties)"
+          } else {
+            $lines += '**Runtime: FAIL or incomplete**'
+          }
+          $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Upload Windows UIA evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-uia-runtime-evidence
+          path: windows-uia-evidence/**
+          if-no-files-found: error
+          retention-days: 30
