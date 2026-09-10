@@ -165,9 +165,15 @@ impl AccessibleNode {
     }
 
     pub fn primary_text(&self) -> &str {
+        // Password providers are not trusted to keep secrets out of name or description.
+        // Never surface any provider-controlled text from a password node.
+        if self.has_state(State::Password) {
+            return "";
+        }
+
         if !self.name.is_empty() {
             &self.name
-        } else if !self.value.is_empty() && !self.has_state(State::Password) {
+        } else if !self.value.is_empty() {
             &self.value
         } else if !self.description.is_empty() {
             &self.description
@@ -199,9 +205,11 @@ mod tests {
     }
 
     #[test]
-    fn password_value_is_never_primary_text() {
+    fn password_provider_text_is_never_primary_text() {
         let node = AccessibleNode {
-            value: "secret".into(),
+            name: "secret-name".into(),
+            value: "secret-value".into(),
+            description: "secret-description".into(),
             states: vec![State::Password],
             ..AccessibleNode::default()
         };
