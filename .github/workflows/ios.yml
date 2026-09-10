@@ -1,0 +1,109 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "platforms/ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "platforms/ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-simulator:
+    name: iOS SDK + Simulator accessibility probe
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Xcode and iOS SDK versions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list runtimes
+
+      - name: Install Rust iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Check Rust core for physical iOS ARM64
+        run: cargo check --lib --locked --target aarch64-apple-ios
+
+      - name: Check Rust core for iOS Simulator ARM64
+        run: cargo check --lib --locked --target aarch64-apple-ios-sim
+
+      - name: Build UIKit probe with current iOS Simulator SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          HOST_ARCH="$(uname -m)"
+          if [[ "$HOST_ARCH" == "arm64" ]]; then
+            TARGET="arm64-apple-ios17.0-simulator"
+          else
+            TARGET="x86_64-apple-ios17.0-simulator"
+          fi
+
+          APP="$RUNNER_TEMP/ScreenReaderIOS.app"
+          mkdir -p "$APP"
+          cp platforms/ios/Info.plist "$APP/Info.plist"
+
+          xcrun swiftc \
+            platforms/ios/AppDelegate.swift \
+            -parse-as-library \
+            -sdk "$SDK" \
+            -target "$TARGET" \
+            -framework UIKit \
+            -emit-executable \
+            -o "$APP/ScreenReaderIOS"
+
+          codesign --force --sign - "$APP"
+          plutil -lint "$APP/Info.plist"
+          file "$APP/ScreenReaderIOS"
+
+      - name: Boot Simulator, install and launch accessibility probe
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DEVICE="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin)["devices"]; print(next(d["udid"] for devices in data.values() for d in devices if d.get("isAvailable") and d.get("name", "").startswith("iPhone")))')"
+          echo "SIMULATOR_UDID=$DEVICE"
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcrun simctl install "$DEVICE" "$RUNNER_TEMP/ScreenReaderIOS.app"
+          xcrun simctl launch "$DEVICE" org.nvdarust.screenreader.ios
+          sleep 5
+          xcrun simctl spawn "$DEVICE" log show --last 2m --style compact --predicate 'process == "ScreenReaderIOS"' | tee platforms/ios/simulator-runtime.log
+          grep -q 'IOS_ACCESSIBILITY_PROBE = PASS' platforms/ios/simulator-runtime.log
+          xcrun simctl terminate "$DEVICE" org.nvdarust.screenreader.ios || true
+
+      - name: Upload iOS Simulator runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-simulator-accessibility-runtime-evidence
+          path: platforms/ios/simulator-runtime.log
+          if-no-files-found: warn
+          retention-days: 30
