@@ -1,10 +1,13 @@
-﻿[package]
+[package]
 name = "nvda-rust-uia-standalone"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
-[dependencies.windows]
+[lib]
+path = "src/lib.rs"
+
+[target.'cfg(windows)'.dependencies.windows]
 git = "https://github.com/microsoft/windows-rs.git"
 rev = "6195af4858f13bb3714e901d9bda6bc38abcfbf7"
 default-features = true
@@ -21,11 +24,13 @@ features = [
     "windef",
 ]
 
-[dependencies.windows-core]
+[target.'cfg(windows)'.dependencies.windows-core]
 git = "https://github.com/microsoft/windows-rs.git"
 rev = "6195af4858f13bb3714e901d9bda6bc38abcfbf7"
 default-features = true
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
+panic = "abort"
 strip = "debuginfo"
