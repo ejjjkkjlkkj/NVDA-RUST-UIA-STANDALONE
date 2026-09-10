@@ -102,7 +102,10 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
             Ok(value) => value.0,
             Err(_) => {
                 fallback_properties += 1;
-                element.CurrentControlType().map(|value| value.0).unwrap_or_default()
+                element
+                    .CurrentControlType()
+                    .map(|value| value.0)
+                    .unwrap_or_default()
             }
         };
 
