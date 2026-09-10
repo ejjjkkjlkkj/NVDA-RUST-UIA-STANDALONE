@@ -1,0 +1,16 @@
+[package]
+name = "nvda-rust-atspi-linux"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+atspi = { version = "=0.30.0", default-features = false, features = ["connection", "proxies", "wrappers", "tokio"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
