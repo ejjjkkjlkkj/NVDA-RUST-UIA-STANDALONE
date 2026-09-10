@@ -58,6 +58,7 @@ jobs:
             at-spi2-core \
             dbus-x11 \
             gir1.2-gtk-3.0 \
+            libatk-adaptor \
             libatk-bridge2.0-0 \
             python3-gi \
             xvfb
@@ -81,11 +82,12 @@ jobs:
           xvfb-run -a dbus-run-session -- bash -euxo pipefail -c '
             export NO_AT_BRIDGE=0
             export GTK_A11Y=always
+            export GTK_MODULES=atk-bridge
 
-            cargo run --manifest-path platforms/linux/Cargo.toml --locked -- 8 > platforms/linux/atspi-runtime.log 2>&1 &
+            cargo run --manifest-path platforms/linux/Cargo.toml --locked -- 20 > platforms/linux/atspi-runtime.log 2>&1 &
             PROBE_PID=$!
 
-            sleep 2
+            sleep 3
             python3 platforms/linux/tests/gtk_accessibility_fixture.py | tee platforms/linux/gtk-fixture.log
             wait "$PROBE_PID"
 
