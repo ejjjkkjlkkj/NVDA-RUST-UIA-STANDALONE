@@ -149,20 +149,24 @@ jobs:
           $stdout = Join-Path $evidence 'screen-reader.stdout.txt'
           $stderr = Join-Path $evidence 'screen-reader.stderr.txt'
 
-          $reader = Start-Process \
-            -FilePath $exe \
-            -ArgumentList '12' \
-            -RedirectStandardOutput $stdout \
-            -RedirectStandardError $stderr \
-            -PassThru
+          $readerArguments = @{
+            FilePath = $exe
+            ArgumentList = @('12')
+            RedirectStandardOutput = $stdout
+            RedirectStandardError = $stderr
+            PassThru = $true
+          }
+          $reader = Start-Process @readerArguments
 
           Start-Sleep -Seconds 2
 
-          $fixture = Start-Process \
-            -FilePath 'powershell.exe' \
-            -ArgumentList '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $fixturePath \
-            -Wait \
-            -PassThru
+          $fixtureArguments = @{
+            FilePath = 'powershell.exe'
+            ArgumentList = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $fixturePath)
+            Wait = $true
+            PassThru = $true
+          }
+          $fixture = Start-Process @fixtureArguments
 
           if ($fixture.ExitCode -ne 0) {
             throw "WinForms fixture failed with exit code $($fixture.ExitCode)"
