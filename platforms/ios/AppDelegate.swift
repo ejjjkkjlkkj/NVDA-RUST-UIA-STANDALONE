@@ -35,6 +35,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         self.window = window
 
         UIAccessibility.post(notification: .screenChanged, argument: label)
+        NSLog("IOS_ACCESSIBILITY_PROBE = PASS voiceOverRunning=%@", UIAccessibility.isVoiceOverRunning.description)
         return true
     }
 }
