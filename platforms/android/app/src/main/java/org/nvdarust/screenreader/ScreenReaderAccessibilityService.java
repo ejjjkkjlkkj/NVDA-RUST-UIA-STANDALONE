@@ -3,6 +3,7 @@ package org.nvdarust.screenreader;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.graphics.Rect;
+import android.os.Build;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -77,7 +78,7 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
         String bounds = "";
         boolean editable = false;
         boolean checkable = false;
-        boolean checked = false;
+        int checkedState = AccessibilityNodeInfo.CHECKED_STATE_FALSE;
         boolean selected = false;
         boolean enabled = false;
 
@@ -88,11 +89,12 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
             editable = source.isEditable();
             password |= source.isPassword();
             checkable = source.isCheckable();
-            checked = source.isChecked();
+            checkedState = getCheckedState(source);
             selected = source.isSelected();
             enabled = source.isEnabled();
         }
 
+        boolean checked = checkedState == AccessibilityNodeInfo.CHECKED_STATE_TRUE;
         String eventText = password ? "<password>" : valueOf(event.getText());
         String eventDescription = password ? "<password>" : valueOf(event.getContentDescription());
         String safeNodeText = password ? "<password>" : nodeText;
@@ -114,10 +116,35 @@ public final class ScreenReaderAccessibilityService extends AccessibilityService
                         + " password=" + password
                         + " checkable=" + checkable
                         + " checked=" + checked
+                        + " checkedState=" + checkedStateName(checkedState)
                         + " selected=" + selected
                         + " enabled=" + enabled
                         + " bounds=" + bounds
                         + " windows=" + getWindows().size());
+    }
+
+    private static int getCheckedState(AccessibilityNodeInfo source) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            return source.getChecked();
+        }
+        return legacyCheckedState(source);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static int legacyCheckedState(AccessibilityNodeInfo source) {
+        return source.isChecked()
+                ? AccessibilityNodeInfo.CHECKED_STATE_TRUE
+                : AccessibilityNodeInfo.CHECKED_STATE_FALSE;
+    }
+
+    static String checkedStateName(int checkedState) {
+        if (checkedState == AccessibilityNodeInfo.CHECKED_STATE_TRUE) {
+            return "checked";
+        }
+        if (checkedState == AccessibilityNodeInfo.CHECKED_STATE_PARTIAL) {
+            return "partially-checked";
+        }
+        return "unchecked";
     }
 
     private void speakFocusedNode(AccessibilityEvent event, AccessibilityNodeInfo source) {
