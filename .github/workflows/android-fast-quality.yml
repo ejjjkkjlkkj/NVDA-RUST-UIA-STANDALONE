@@ -2,7 +2,9 @@ name: Android Fast Quality
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - automation/android-test-modernization
     paths:
       - "platforms/android/**"
       - ".github/workflows/android-fast-quality.yml"
@@ -53,11 +55,15 @@ jobs:
         with:
           gradle-version: "9.6.0"
 
-      - name: Android lint and JVM tests
+      - name: Android lint, JVM tests, and instrumentation compile
         shell: bash
         run: |
           set -euxo pipefail
-          gradle -p platforms/android :app:lintDebug :app:testDebugUnitTest --stacktrace
+          gradle -p platforms/android \
+            :app:lintDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebugAndroidTest \
+            --stacktrace
 
       - name: Validate runtime evidence summarizer
         shell: bash
@@ -90,7 +96,7 @@ jobs:
 
           echo "ANDROID_ACCESSIBILITY_SECURITY_INVARIANTS = PASS"
 
-      - name: Upload lint and unit-test evidence
+      - name: Upload fast quality evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -99,5 +105,6 @@ jobs:
             platforms/android/app/build/reports/lint-results-debug.*
             platforms/android/app/build/reports/tests/**
             platforms/android/app/build/test-results/**
+            platforms/android/app/build/outputs/apk/androidTest/debug/*.apk
           if-no-files-found: warn
           retention-days: 30
