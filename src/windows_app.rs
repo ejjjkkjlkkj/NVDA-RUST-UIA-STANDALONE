@@ -39,11 +39,7 @@ fn bstr_or_unavailable(value: Result<BSTR>) -> String {
         .unwrap_or_else(|_| "<unavailable>".to_string())
 }
 
-fn print_sender(
-    kind: AccessibilityEventKind,
-    sequence: u64,
-    sender: Ref<IUIAutomationElement>,
-) {
+fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
     let Some(element) = sender.as_ref() else {
         eprintln!("{kind} #{sequence} | sender=NULL");
         return;
