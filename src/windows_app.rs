@@ -7,6 +7,7 @@ use std::{
 
 use nvda_rust_uia_standalone::{
     AccessibilityEventKind, ElementSnapshot, format_event_line, parse_monitor_seconds,
+    uia::role_from_control_type_id,
 };
 use windows::Win32::*;
 use windows_core::{BSTR, Interface, Ref, Result, implement};
@@ -15,6 +16,7 @@ const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
 const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
 
 const PROCESS_ID_PROPERTY: PROPERTYID = PROPERTYID(30002);
+const CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30003);
 const LOCALIZED_CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30004);
 const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
 const AUTOMATION_ID_PROPERTY: PROPERTYID = PROPERTYID(30011);
@@ -53,6 +55,7 @@ unsafe fn create_event_cache(automation: &IUIAutomation) -> Result<IUIAutomation
 
     for property in [
         PROCESS_ID_PROPERTY,
+        CONTROL_TYPE_PROPERTY,
         FRAMEWORK_ID_PROPERTY,
         CLASS_NAME_PROPERTY,
         LOCALIZED_CONTROL_TYPE_PROPERTY,
@@ -95,6 +98,17 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
             }
         };
 
+        let control_type_id = match element.CachedControlType() {
+            Ok(value) => value.0,
+            Err(_) => {
+                fallback_properties += 1;
+                element
+                    .CurrentControlType()
+                    .map(|value| value.0)
+                    .unwrap_or_default()
+            }
+        };
+
         let framework = match element.CachedFrameworkId() {
             Ok(value) => value.display().to_string(),
             Err(_) => {
@@ -111,13 +125,17 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
             }
         };
 
-        let role = match element.CachedLocalizedControlType() {
+        let native_role = match element.CachedLocalizedControlType() {
             Ok(value) => value.display().to_string(),
             Err(_) => {
                 fallback_properties += 1;
                 bstr_or_unavailable(element.CurrentLocalizedControlType())
             }
         };
+
+        let role = role_from_control_type_id(control_type_id)
+            .canonical_name()
+            .to_string();
 
         let name = match element.CachedName() {
             Ok(value) => value.display().to_string(),
@@ -146,6 +164,8 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
             framework,
             class_name,
             role,
+            native_role,
+            control_type_id,
             name,
             automation_id,
         };
