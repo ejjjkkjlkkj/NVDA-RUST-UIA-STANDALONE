@@ -5,10 +5,7 @@ use atspi::{
     connection::P2P,
 };
 use futures_util::StreamExt;
-use nvda_rust_uia_standalone::{
-    presentation::focus_utterance,
-    semantic::AccessibleNode,
-};
+use nvda_rust_uia_standalone::{presentation::focus_utterance, semantic::AccessibleNode};
 use tokio::time::timeout;
 
 mod semantic;
