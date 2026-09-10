@@ -72,6 +72,10 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --locked --no-deps -- -D warnings
 
+      - name: Portable backend smoke
+        if: runner.os != 'Windows'
+        run: cargo run --locked -- 0
+
   windows-cross-check:
     name: Windows cross-check / ${{ matrix.os }}
     strategy:
