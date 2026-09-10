@@ -59,6 +59,12 @@ jobs:
           set -euxo pipefail
           gradle -p platforms/android :app:lintDebug :app:testDebugUnitTest --stacktrace
 
+      - name: Validate runtime evidence summarizer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 platforms/android/ci/runtime_evidence_summary.py --self-test
+
       - name: AccessibilityService security invariants
         shell: bash
         run: |
