@@ -1,0 +1,13 @@
+﻿RESULT = PASS
+FIX = remove unnecessary CLSCTX_INPROC_SERVER as u32 casts
+CASTS_FIXED = 3
+WINDOWS_RS_SHA = 6195af4858f13bb3714e901d9bda6bc38abcfbf7
+TARGET = x86_64-pc-windows-msvc
+CARGO_CHECK = PASS
+CLIPPY = PASS
+BUILD_RELEASE = PASS
+UIA_NATIVE_EVENTS_RUNTIME = PASS
+EXE = C:\NVDA-RUST-UIA-STANDALONE\target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe
+BACKUP = C:\NVDA-RUST-UIA-STANDALONE\src\main.rs.20260910-162718.v2.6.bak
+DATE = 2026-09-10T16:27:42.0521130+02:00
+NEXT = TextPattern/TextPattern2 + text extraction + event deduplication

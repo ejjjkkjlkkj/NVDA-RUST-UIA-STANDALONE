@@ -1,0 +1,154 @@
+use std::{
+    env,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Duration,
+};
+
+use windows::Win32::*;
+use windows_core::{BSTR, Interface, Ref, Result, implement};
+
+const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
+const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
+
+static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn bstr_or_unavailable(value: Result<BSTR>) -> String {
+    value
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|_| "<unavailable>".to_string())
+}
+
+fn print_sender(kind: &str, sequence: u64, sender: Ref<IUIAutomationElement>) {
+    let Some(element) = sender.as_ref() else {
+        eprintln!("{kind} #{sequence} | sender=NULL");
+        return;
+    };
+
+    unsafe {
+        let name = bstr_or_unavailable(element.CurrentName());
+        let class_name = bstr_or_unavailable(element.CurrentClassName());
+        let framework = bstr_or_unavailable(element.CurrentFrameworkId());
+        let automation_id = bstr_or_unavailable(element.CurrentAutomationId());
+        let control_type = bstr_or_unavailable(element.CurrentLocalizedControlType());
+        let process_id = element.CurrentProcessId().unwrap_or_default();
+
+        println!(
+            "{kind} #{sequence} | PID={process_id} | Framework={framework} | Class={class_name} | Role={control_type} | Name={name} | AutomationId={automation_id}"
+        );
+    }
+}
+
+#[implement(IUIAutomationFocusChangedEventHandler)]
+struct FocusSink;
+
+impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
+    fn HandleFocusChangedEvent(&self, sender: Ref<IUIAutomationElement>) -> Result<()> {
+        let sequence = FOCUS_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        print_sender("FOCUS", sequence, sender);
+        Ok(())
+    }
+}
+
+#[implement(IUIAutomationEventHandler)]
+struct AutomationSink;
+
+impl IUIAutomationEventHandler_Impl for AutomationSink_Impl {
+    fn HandleAutomationEvent(
+        &self,
+        sender: Ref<IUIAutomationElement>,
+        eventid: EVENTID,
+    ) -> Result<()> {
+        if eventid == TEXT_CHANGED_EVENT {
+            let sequence = TEXT_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            print_sender("TEXT_CHANGED/UIA_20015", sequence, sender);
+        } else if eventid == TEXT_SELECTION_CHANGED_EVENT {
+            let sequence = TEXT_SELECTION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            print_sender("TEXT_SELECTION_CHANGED/UIA_20014", sequence, sender);
+        }
+
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let seconds = env::args()
+        .nth(1)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(15);
+
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED as u32).ok()?;
+
+        let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL as u32)?;
+
+        let automation6: IUIAutomation6 = automation.cast()?;
+        let root = automation.GetRootElement()?;
+
+        let focus_handler: IUIAutomationFocusChangedEventHandler = FocusSink.into();
+        let automation_handler: IUIAutomationEventHandler = AutomationSink.into();
+
+        // FocusChanged est system-wide selon Microsoft UI Automation.
+        automation
+            .AddFocusChangedEventHandler(None::<&IUIAutomationCacheRequest>, &focus_handler)
+            .ok()?;
+
+        // Event Handler Group pour les evenements texte.
+        let group = automation6.CreateEventHandlerGroup()?;
+
+        group
+            .AddAutomationEventHandler(
+                TEXT_CHANGED_EVENT,
+                TreeScope_Subtree,
+                None::<&IUIAutomationCacheRequest>,
+                &automation_handler,
+            )
+            .ok()?;
+
+        group
+            .AddAutomationEventHandler(
+                TEXT_SELECTION_CHANGED_EVENT,
+                TreeScope_Subtree,
+                None::<&IUIAutomationCacheRequest>,
+                &automation_handler,
+            )
+            .ok()?;
+
+        automation6.AddEventHandlerGroup(&root, &group).ok()?;
+
+        println!("UIA_NATIVE_EVENTS_INIT = PASS");
+        println!("WINDOWS_CORE_DIRECT = PASS");
+        println!("FOCUS_HANDLER = PASS");
+        println!("TEXT_CHANGED_HANDLER = PASS");
+        println!("TEXT_SELECTION_HANDLER = PASS");
+        println!("EVENT_HANDLER_GROUP = PASS");
+        println!("MONITOR_SECONDS = {seconds}");
+        println!("TEST = focus + frappe texte + curseur/selection");
+
+        thread::sleep(Duration::from_secs(seconds));
+
+        // Microsoft recommande l'ajout/suppression depuis le meme thread client.
+        automation6.RemoveEventHandlerGroup(&root, &group).ok()?;
+        automation
+            .RemoveFocusChangedEventHandler(&focus_handler)
+            .ok()?;
+
+        // Les callbacks deja en transit peuvent encore arriver apres unsubscribe.
+        thread::sleep(Duration::from_millis(300));
+
+        println!(
+            "COUNTS | focus={} | text_changed={} | text_selection={}",
+            FOCUS_COUNT.load(Ordering::Relaxed),
+            TEXT_CHANGED_COUNT.load(Ordering::Relaxed),
+            TEXT_SELECTION_COUNT.load(Ordering::Relaxed)
+        );
+
+        println!("UIA_NATIVE_EVENTS_RUNTIME = PASS");
+
+        CoUninitialize();
+    }
+
+    Ok(())
+}

@@ -1,0 +1,9 @@
+﻿RESULT = PASS
+FIX = remove unused UI_UIAutomation and core glob imports
+IMPORT = use windows::Win32::*;
+ROOT = C:\NVDA-RUST-UIA-STANDALONE
+TARGET = x86_64-pc-windows-msvc
+EXE = C:\NVDA-RUST-UIA-STANDALONE\target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe
+BACKUP = C:\NVDA-RUST-UIA-STANDALONE\src\main.rs.20260910-154820.clippy.bak
+DATE = 2026-09-10T15:48:56.6550336+02:00
+NEXT = native UIA event handlers

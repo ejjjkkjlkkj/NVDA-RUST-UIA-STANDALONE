@@ -1,0 +1,80 @@
+use std::{
+    env, thread,
+    time::{Duration, Instant},
+};
+
+use windows::{UI::UIAutomation::*, Win32::*, core::*};
+
+fn main() -> windows::core::Result<()> {
+    let seconds = env::args()
+        .nth(1)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(10);
+
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED as u32).ok()?;
+
+        let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL as u32)?;
+
+        println!("UIA_INIT = PASS");
+        println!("MONITOR_SECONDS = {seconds}");
+        println!("Changez le focus entre PowerShell, Bloc-notes, Parametres, etc.");
+
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        let mut previous = String::new();
+
+        while Instant::now() < deadline {
+            match automation.GetFocusedElement() {
+                Ok(element) => {
+                    let name = element
+                        .CurrentName()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+                    let role = element
+                        .CurrentLocalizedControlType()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+                    let class_name = element
+                        .CurrentClassName()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+                    let framework = element
+                        .CurrentFrameworkId()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+                    let automation_id = element
+                        .CurrentAutomationId()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+                    let process_id = element.CurrentProcessId().unwrap_or_default();
+
+                    let current = format!(
+                        "{process_id}|{framework}|{class_name}|{role}|{name}|{automation_id}"
+                    );
+
+                    if current != previous {
+                        println!(
+                            "FOCUS | PID={process_id} | Framework={framework} | Class={class_name} | Role={role} | Name={name} | AutomationId={automation_id}"
+                        );
+                        previous = current;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("UIA_FOCUS_ERROR = {error}");
+                }
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        CoUninitialize();
+    }
+
+    println!("UIA_RUNTIME = PASS");
+    Ok(())
+}
