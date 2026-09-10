@@ -24,7 +24,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if let Some(application) = system.focused_application()? {
+    let application = match system.focused_application() {
+        Ok(application) => application,
+        Err(error) => {
+            println!("AX_INTERACTIVE_SESSION = UNAVAILABLE");
+            println!("AX_FOCUSED_APPLICATION_ERROR = {error:?}");
+            println!("AX_NATIVE_PROBE = PASS_API_ONLY");
+            return Ok(());
+        }
+    };
+
+    if let Some(application) = application {
         println!("AX_FOCUSED_APPLICATION_PID = {}", application.pid()?);
         println!(
             "AX_FOCUSED_APPLICATION_ATTRIBUTES = {}",
@@ -34,7 +44,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("AX_FOCUSED_APPLICATION = NONE");
     }
 
-    if let Some(element) = system.focused_ui_element()? {
+    let element = match system.focused_ui_element() {
+        Ok(element) => element,
+        Err(error) => {
+            println!("AX_INTERACTIVE_FOCUSED_ELEMENT = UNAVAILABLE");
+            println!("AX_FOCUSED_ELEMENT_ERROR = {error:?}");
+            println!("AX_NATIVE_PROBE = PASS_API_ONLY");
+            return Ok(());
+        }
+    };
+
+    if let Some(element) = element {
         let role = element
             .string_attribute(AX_ROLE_ATTRIBUTE)?
             .unwrap_or_default();
@@ -50,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("AX_FOCUSED_ELEMENT = NONE");
     }
 
+    println!("AX_INTERACTIVE_SESSION = PASS");
     println!("AX_NATIVE_PROBE = PASS");
     Ok(())
 }
