@@ -1,0 +1,110 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platforms/linux/**"
+      - ".github/workflows/linux.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "platforms/linux/**"
+      - ".github/workflows/linux.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atspi:
+    name: AT-SPI2 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            experimental: false
+          - os: ubuntu-26.04
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Cache Linux backend
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: platforms/linux -> target
+          key: atspi-${{ matrix.os }}
+
+      - name: Install AT-SPI2 graphical test stack
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            at-spi2-core \
+            dbus-x11 \
+            gir1.2-gtk-3.0 \
+            libatk-bridge2.0-0 \
+            python3-gi \
+            xvfb
+          test -x /usr/libexec/at-spi-bus-launcher
+          test -x /usr/libexec/at-spi2-registryd
+
+      - name: Resolve and validate Rust AT-SPI backend
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo generate-lockfile --manifest-path platforms/linux/Cargo.toml
+          cargo fmt --manifest-path platforms/linux/Cargo.toml -- --check
+          cargo check --manifest-path platforms/linux/Cargo.toml --locked
+          cargo clippy --manifest-path platforms/linux/Cargo.toml --locked -- -D warnings
+          cargo test --manifest-path platforms/linux/Cargo.toml --locked
+
+      - name: Real AT-SPI2 event integration test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          xvfb-run -a dbus-run-session -- bash -euxo pipefail -c '
+            export NO_AT_BRIDGE=0
+            export GTK_A11Y=always
+
+            cargo run --manifest-path platforms/linux/Cargo.toml --locked -- 8 > platforms/linux/atspi-runtime.log 2>&1 &
+            PROBE_PID=$!
+
+            sleep 2
+            python3 platforms/linux/tests/gtk_accessibility_fixture.py | tee platforms/linux/gtk-fixture.log
+            wait "$PROBE_PID"
+
+            cat platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_CONNECTION = PASS" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_ROOT_CHILDREN =" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_EVENT #" platforms/linux/atspi-runtime.log
+            grep -q "AT_SPI_RUNTIME = PASS" platforms/linux/atspi-runtime.log
+            grep -q "GTK_ACCESSIBILITY_FIXTURE = PASS" platforms/linux/gtk-fixture.log
+          '
+
+      - name: Upload Linux AT-SPI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-atspi-${{ matrix.os }}-evidence
+          path: |
+            platforms/linux/atspi-runtime.log
+            platforms/linux/gtk-fixture.log
+            platforms/linux/Cargo.lock
+          if-no-files-found: warn
+          retention-days: 30
