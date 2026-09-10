@@ -10,37 +10,58 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: -D warnings
+
 jobs:
   rust:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install latest stable Rust MSVC
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-          components: rustfmt, clippy
+      - name: Update latest stable Rust
+        shell: pwsh
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+          rustup component add rustfmt clippy
 
-      - name: Rust version
-        run: rustc -vV
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
 
-      - name: Cargo version
-        run: cargo -V
+      - name: Toolchain versions
+        shell: pwsh
+        run: |
+          rustc -vV
+          cargo -V
+          rustup show active-toolchain
 
       - name: Cargo check
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Cargo test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Upload release executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: nvda-rust-uia-standalone-windows-x64
+          path: target/release/*.exe
+          if-no-files-found: error
+          retention-days: 14
