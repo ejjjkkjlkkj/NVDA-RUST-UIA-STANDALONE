@@ -1,8 +1,8 @@
 use std::{env, error::Error, time::Duration};
 
 use atspi::{
-    AccessibilityConnection, Event, EventProperties, FocusEvents, InterfaceSet, ObjectEvents, State,
-    WindowEvents, connection::P2P,
+    AccessibilityConnection, Event, EventProperties, FocusEvents, InterfaceSet, ObjectEvents,
+    State, WindowEvents, connection::P2P,
 };
 use futures_util::StreamExt;
 use nvda_rust_uia_standalone::{presentation::focus_utterance, semantic::AccessibleNode};
