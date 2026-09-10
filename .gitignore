@@ -6,3 +6,15 @@
 *.pdb
 .DS_Store
 Thumbs.db
+
+# Android
+platforms/android/.gradle/
+platforms/android/**/build/
+platforms/android/local.properties
+platforms/android/accessibility-dumpsys.txt
+platforms/android/accessibility-logcat.txt
+
+# Apple
+DerivedData/
+platforms/ios/build/
+platforms/ios/*.xcresult
