@@ -1,0 +1,105 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platforms/macos/**"
+      - ".github/workflows/macos.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "platforms/macos/**"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ax-native:
+    name: AXUIElement / macOS 26 / Xcode 26.6
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26.6
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          sw_vers
+          xcodebuild -version
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Cache macOS backend
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: platforms/macos -> target
+          key: ax-macos26
+
+      - name: Resolve and validate AX backend
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo generate-lockfile --manifest-path platforms/macos/Cargo.toml
+          cargo fmt --manifest-path platforms/macos/Cargo.toml -- --check
+          cargo check --manifest-path platforms/macos/Cargo.toml --locked
+          cargo clippy --manifest-path platforms/macos/Cargo.toml --locked -- -D warnings
+          cargo test --manifest-path platforms/macos/Cargo.toml --locked
+
+      - name: Run native AX permission/system-wide probe
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo run --manifest-path platforms/macos/Cargo.toml --locked | tee platforms/macos/ax-runtime.log
+          grep -q "AX_SYSTEM_WIDE = PASS" platforms/macos/ax-runtime.log
+          grep -q "AX_NATIVE_PROBE = PASS" platforms/macos/ax-runtime.log
+
+      - name: Upload macOS AX evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-26-ax-native-evidence
+          path: |
+            platforms/macos/ax-runtime.log
+            platforms/macos/Cargo.lock
+          if-no-files-found: warn
+          retention-days: 30
+
+  xcode-27-forward-compat:
+    name: AXUIElement / Xcode 27 preview
+    runs-on: xcode-27
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Toolchain versions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile AX backend with Xcode 27
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo generate-lockfile --manifest-path platforms/macos/Cargo.toml
+          cargo check --manifest-path platforms/macos/Cargo.toml --locked
