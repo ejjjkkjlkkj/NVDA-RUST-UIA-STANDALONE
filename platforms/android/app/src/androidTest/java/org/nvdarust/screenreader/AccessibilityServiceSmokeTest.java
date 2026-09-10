@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.provider.Settings;
+import android.view.accessibility.AccessibilityEvent;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import org.junit.Test;
@@ -41,5 +42,23 @@ public final class AccessibilityServiceSmokeTest {
                 "screen reader service was not enabled by the test harness: " + enabled,
                 enabled.contains(component.flattenToString())
                         || enabled.contains(component.flattenToShortString()));
+    }
+
+    @Test
+    public void passwordEventPresentationNeverLeaksEventText() {
+        AccessibilityEvent event = AccessibilityEvent.obtain();
+        try {
+            event.setEventType(AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED);
+            event.setPassword(true);
+            event.getText().add("super-secret-value");
+            event.setContentDescription("super-secret-description");
+
+            String presentation = ScreenReaderAccessibilityService.presentationText(event, null);
+
+            assertEquals("password field", presentation);
+            assertTrue(!presentation.contains("super-secret"));
+        } finally {
+            event.recycle();
+        }
     }
 }
