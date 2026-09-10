@@ -1,7 +1,7 @@
 use std::{env, error::Error, time::Duration};
 
 use atspi::{
-    AccessibilityConnection, Event, EventProperties, FocusEvents, ObjectEvents, State,
+    AccessibilityConnection, Event, EventProperties, FocusEvents, InterfaceSet, ObjectEvents, State,
     WindowEvents, connection::P2P,
 };
 use futures_util::StreamExt;
@@ -11,6 +11,14 @@ use tokio::time::timeout;
 mod semantic;
 
 const DEFAULT_MONITOR_SECONDS: u64 = 8;
+
+struct SemanticSnapshot {
+    node: AccessibleNode,
+    interfaces: Option<InterfaceSet>,
+    child_count: i32,
+    index_in_parent: i32,
+    attribute_count: usize,
+}
 
 fn monitor_seconds() -> u64 {
     env::args()
@@ -45,10 +53,10 @@ fn is_focus_gain(event: &Event) -> bool {
     }
 }
 
-async fn semantic_node_for_event(
+async fn semantic_snapshot_for_event(
     connection: &AccessibilityConnection,
     event: &Event,
-) -> Result<Option<AccessibleNode>, Box<dyn Error>> {
+) -> Result<Option<SemanticSnapshot>, Box<dyn Error>> {
     let object_ref = event.object_ref();
     if object_ref.is_null() {
         return Ok(None);
@@ -65,21 +73,34 @@ async fn semantic_node_for_event(
     let states = semantic::states_from_atspi(native_role, native_states);
     let bus_name = object_ref.name_as_str().unwrap_or("unknown");
     let path = object_ref.path_as_str();
+    let interfaces = accessible.get_interfaces().await.ok();
+    let child_count = accessible.child_count().await.unwrap_or_default();
+    let index_in_parent = accessible.get_index_in_parent().await.unwrap_or(-1);
+    let attribute_count = accessible
+        .get_attributes()
+        .await
+        .map_or(0, |attributes| attributes.len());
 
-    Ok(Some(AccessibleNode {
-        process_id: 0,
-        platform_id: if accessible_id.is_empty() {
-            format!("atspi:{bus_name}:{path}")
-        } else {
-            format!("atspi:{bus_name}:{path}:{accessible_id}")
+    Ok(Some(SemanticSnapshot {
+        node: AccessibleNode {
+            process_id: 0,
+            platform_id: if accessible_id.is_empty() {
+                format!("atspi:{bus_name}:{path}")
+            } else {
+                format!("atspi:{bus_name}:{path}:{accessible_id}")
+            },
+            role,
+            native_role: native_role.to_string(),
+            name,
+            description,
+            value: String::new(),
+            states,
+            bounds: None,
         },
-        role,
-        native_role: native_role.to_string(),
-        name,
-        description,
-        value: String::new(),
-        states,
-        bounds: None,
+        interfaces,
+        child_count,
+        index_in_parent,
+        attribute_count,
     }))
 }
 
@@ -139,9 +160,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     event_family(&event)
                 );
 
-                match semantic_node_for_event(&connection, &event).await {
-                    Ok(Some(node)) => {
+                match semantic_snapshot_for_event(&connection, &event).await {
+                    Ok(Some(snapshot)) => {
                         semantic_events += 1;
+                        let node = &snapshot.node;
                         println!(
                             "AT_SPI_SEMANTIC #{} role={} native_role={} name={} states={:?} platform_id={}",
                             semantic_events,
@@ -151,8 +173,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             node.states,
                             node.platform_id
                         );
+                        println!(
+                            "AT_SPI_CAPABILITIES interfaces={:?} child_count={} index_in_parent={} attributes={}",
+                            snapshot.interfaces,
+                            snapshot.child_count,
+                            snapshot.index_in_parent,
+                            snapshot.attribute_count
+                        );
 
-                        if focus_gained && let Some(utterance) = focus_utterance(&node) {
+                        if focus_gained && let Some(utterance) = focus_utterance(node) {
                             println!("AT_SPI_PRESENTATION = {}", utterance.text);
                         }
                     }
