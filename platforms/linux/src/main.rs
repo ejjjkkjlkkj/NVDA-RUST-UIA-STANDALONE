@@ -1,7 +1,7 @@
 use std::{env, error::Error, time::Duration};
 
 use atspi::{
-    AccessibilityConnection, Event, EventProperties, FocusEvents, ObjectEvents, WindowEvents,
+    AccessibilityConnection, Event, EventProperties, FocusEvents, ObjectEvents, State, WindowEvents,
     connection::P2P,
 };
 use futures_util::StreamExt;
@@ -32,6 +32,16 @@ fn event_family(event: &Event) -> &'static str {
         Event::Cache(_) => "cache",
         Event::Listener(_) => "listener",
         _ => "unknown",
+    }
+}
+
+fn is_focus_gain(event: &Event) -> bool {
+    match event {
+        Event::Focus(_) => true,
+        Event::Object(ObjectEvents::StateChanged(change)) => {
+            change.state == State::Focused && change.enabled
+        }
+        _ => false,
     }
 }
 
@@ -114,8 +124,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match timeout(remaining, stream.next()).await {
             Ok(Some(Ok(event))) => {
                 total_events += 1;
+                let focus_gained = is_focus_gain(&event);
+                if focus_gained {
+                    focus_events += 1;
+                }
                 match &event {
-                    Event::Focus(_) => focus_events += 1,
                     Event::Object(_) => object_events += 1,
                     Event::Window(_) => window_events += 1,
                     _ => {}
@@ -139,9 +152,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             node.platform_id
                         );
 
-                        if matches!(event, Event::Focus(_))
-                            && let Some(utterance) = focus_utterance(&node)
-                        {
+                        if focus_gained && let Some(utterance) = focus_utterance(&node) {
                             println!("AT_SPI_PRESENTATION = {}", utterance.text);
                         }
                     }
