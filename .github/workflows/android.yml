@@ -173,19 +173,30 @@ jobs:
           SECRET='android-runtime-secret'
 
           adb install -r "$APK"
+          adb shell dumpsys package org.nvdarust.screenreader > platforms/android/package-pre.txt
+          grep -q 'ScreenReaderAccessibilityService' platforms/android/package-pre.txt
+
           adb logcat -c
+          adb shell settings put secure accessibility_enabled 0
+          adb shell settings delete secure enabled_accessibility_services || true
+          adb shell settings delete secure touch_exploration_granted_accessibility_services || true
           adb shell settings put secure enabled_accessibility_services "$COMPONENT"
+          adb shell settings put secure touch_exploration_granted_accessibility_services "$COMPONENT"
           adb shell settings put secure accessibility_enabled 1
 
           for attempt in $(seq 1 30); do
             ENABLED="$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')"
-            if [[ "$ENABLED" == *"org.nvdarust.screenreader"* ]]; then
+            TOUCH_GRANTED="$(adb shell settings get secure touch_exploration_granted_accessibility_services | tr -d '\r')"
+            if [[ "$ENABLED" == *"org.nvdarust.screenreader"* ]] \
+              && [[ "$TOUCH_GRANTED" == *"org.nvdarust.screenreader"* ]]; then
               break
             fi
             sleep 1
           done
           echo "$ENABLED" | tee platforms/android/accessibility-enabled-pre.txt
+          echo "$TOUCH_GRANTED" | tee platforms/android/accessibility-touch-exploration-pre.txt
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-pre.txt
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-touch-exploration-pre.txt
 
           for attempt in $(seq 1 30); do
             adb shell dumpsys accessibility > platforms/android/accessibility-dumpsys-pre.txt
@@ -242,14 +253,23 @@ jobs:
           SECRET='android-runtime-secret'
 
           adb install -r "$APK"
+          adb shell dumpsys package org.nvdarust.screenreader > platforms/android/package-post.txt
+          grep -q 'ScreenReaderAccessibilityService' platforms/android/package-post.txt
+
           adb logcat -c
+          adb shell settings put secure accessibility_enabled 0
+          adb shell settings delete secure enabled_accessibility_services || true
+          adb shell settings delete secure touch_exploration_granted_accessibility_services || true
           adb shell settings put secure enabled_accessibility_services "$COMPONENT"
+          adb shell settings put secure touch_exploration_granted_accessibility_services "$COMPONENT"
           adb shell settings put secure accessibility_enabled 1
 
           for attempt in $(seq 1 30); do
             ENABLED="$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')"
+            TOUCH_GRANTED="$(adb shell settings get secure touch_exploration_granted_accessibility_services | tr -d '\r')"
             adb shell dumpsys accessibility > platforms/android/accessibility-dumpsys.txt
             if [[ "$ENABLED" == *"org.nvdarust.screenreader"* ]] \
+              && [[ "$TOUCH_GRANTED" == *"org.nvdarust.screenreader"* ]] \
               && grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt; then
               break
             fi
@@ -257,7 +277,9 @@ jobs:
           done
 
           echo "$ENABLED" | tee platforms/android/accessibility-enabled-post.txt
+          echo "$TOUCH_GRANTED" | tee platforms/android/accessibility-touch-exploration-post.txt
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-enabled-post.txt
+          grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-touch-exploration-post.txt
           grep -q 'org.nvdarust.screenreader' platforms/android/accessibility-dumpsys.txt
 
           for attempt in $(seq 1 30); do
@@ -307,8 +329,12 @@ jobs:
           path: |
             platforms/android/android-version.txt
             platforms/android/emulator.log
+            platforms/android/package-pre.txt
+            platforms/android/package-post.txt
             platforms/android/accessibility-enabled-pre.txt
             platforms/android/accessibility-enabled-post.txt
+            platforms/android/accessibility-touch-exploration-pre.txt
+            platforms/android/accessibility-touch-exploration-post.txt
             platforms/android/accessibility-dumpsys-pre.txt
             platforms/android/accessibility-dumpsys.txt
             platforms/android/accessibility-logcat-pre.txt
