@@ -74,7 +74,10 @@ mod tests {
 
     #[test]
     fn invalid_value_uses_default() {
-        assert_eq!(parse_monitor_seconds(Some("invalid")), DEFAULT_MONITOR_SECONDS);
+        assert_eq!(
+            parse_monitor_seconds(Some("invalid")),
+            DEFAULT_MONITOR_SECONDS
+        );
     }
 
     #[test]
