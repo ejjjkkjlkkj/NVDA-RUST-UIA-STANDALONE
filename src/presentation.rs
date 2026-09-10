@@ -24,7 +24,15 @@ fn push_token(tokens: &mut Vec<String>, value: impl Into<String>) {
 
 pub fn focus_utterance(node: &AccessibleNode) -> Option<Utterance> {
     let mut tokens = Vec::new();
-    push_token(&mut tokens, node.primary_text());
+
+    if node.has_state(State::Password) {
+        // Use a fixed phrase before consuming any provider-controlled text. A broken or
+        // hostile accessibility provider must not be able to leak a password through
+        // name, value, or description.
+        push_token(&mut tokens, "password field");
+    } else {
+        push_token(&mut tokens, node.primary_text());
+    }
 
     if node.role != Role::Unknown {
         push_token(&mut tokens, node.role.to_string());
@@ -87,16 +95,18 @@ mod tests {
     }
 
     #[test]
-    fn password_value_is_not_spoken() {
+    fn password_provider_text_is_never_spoken() {
         let node = AccessibleNode {
             role: Role::EditableText,
-            value: "super-secret".into(),
+            name: "super-secret-name".into(),
+            value: "super-secret-value".into(),
+            description: "super-secret-description".into(),
             states: vec![State::Password],
             ..AccessibleNode::default()
         };
 
-        let utterance = focus_utterance(&node).expect("role still produces speech");
-        assert_eq!(utterance.text, "editable_text");
+        let utterance = focus_utterance(&node).expect("password role produces safe speech");
+        assert_eq!(utterance.text, "password field, editable_text");
         assert!(!utterance.text.contains("super-secret"));
     }
 
