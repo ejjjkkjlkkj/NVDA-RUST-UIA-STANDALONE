@@ -9,6 +9,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.os.Build;
 import android.provider.Settings;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -46,7 +47,7 @@ public final class AccessibilityServiceSmokeTest {
 
     @Test
     public void passwordEventPresentationNeverLeaksEventText() {
-        AccessibilityEvent event = AccessibilityEvent.obtain();
+        AccessibilityEvent event = createTestAccessibilityEvent();
         try {
             event.setEventType(AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED);
             event.setPassword(true);
@@ -58,7 +59,30 @@ public final class AccessibilityServiceSmokeTest {
             assertEquals("password field", presentation);
             assertTrue(!presentation.contains("super-secret"));
         } finally {
-            event.recycle();
+            recycleLegacyTestAccessibilityEvent(event);
         }
+    }
+
+    private static AccessibilityEvent createTestAccessibilityEvent() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return new AccessibilityEvent();
+        }
+        return obtainLegacyTestAccessibilityEvent();
+    }
+
+    @SuppressWarnings("deprecation")
+    private static AccessibilityEvent obtainLegacyTestAccessibilityEvent() {
+        return AccessibilityEvent.obtain();
+    }
+
+    private static void recycleLegacyTestAccessibilityEvent(AccessibilityEvent event) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            recycleLegacyAccessibilityEvent(event);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void recycleLegacyAccessibilityEvent(AccessibilityEvent event) {
+        event.recycle();
     }
 }
