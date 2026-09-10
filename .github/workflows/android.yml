@@ -46,7 +46,7 @@ jobs:
         run: cargo check --lib --locked --target x86_64-linux-android
 
   android-emulator:
-    name: Android AccessibilityService / emulator
+    name: Android 17 AccessibilityService / emulator
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -58,16 +58,22 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup latest Android command-line tools
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android 17 / API 37 SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          command -v sdkmanager
+          sdkmanager --version
+          sdkmanager "platforms;android-37" "build-tools;37.0.0" "platform-tools"
+          sdkmanager --list_installed
+
       - name: Setup Gradle 9.6
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.6.0"
-
-      - name: Install Android 17 compile SDK
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0"
 
       - name: Assemble app and instrumentation tests
         run: gradle -p platforms/android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
@@ -79,16 +85,18 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Real AccessibilityService test on Android emulator
+      - name: Real AccessibilityService test on Android 17 emulator
         uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
-          api-level: 36
+          api-level: 37
           target: google_apis
           arch: x86_64
           profile: pixel_6
           disable-animations: true
           script: |
             set -euxo pipefail
+            adb shell getprop ro.build.version.release
+            adb shell getprop ro.build.version.sdk
             APK="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
             adb install -r "$APK"
             adb shell settings put secure enabled_accessibility_services 'org.nvdarust.screenreader/org.nvdarust.screenreader.ScreenReaderAccessibilityService'
@@ -106,10 +114,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: android-accessibility-runtime-evidence
+          name: android-17-accessibility-runtime-evidence
           path: |
             platforms/android/accessibility-dumpsys.txt
             platforms/android/accessibility-logcat.txt
             platforms/android/app/build/reports/androidTests/**
+            platforms/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
           retention-days: 30
