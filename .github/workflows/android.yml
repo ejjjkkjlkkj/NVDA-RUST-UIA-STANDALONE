@@ -61,7 +61,7 @@ jobs:
       - name: Setup latest Android command-line tools
         uses: android-actions/setup-android@v4
 
-      - name: Install Android 17 / API 37 SDK and discover emulator image
+      - name: Install Android 17 / API 37 SDK and emulator image
         id: android17
         shell: bash
         run: |
@@ -78,22 +78,12 @@ jobs:
 
           SDK_LIST="$RUNNER_TEMP/sdkmanager-list.txt"
           sdkmanager --list --channel=3 > "$SDK_LIST"
-          grep -E 'system-images;android-(37|37\.|CinnamonBun).*;x86_64' "$SDK_LIST" || true
+          IMAGE="system-images;android-37.0;google_apis;x86_64"
 
-          IMAGE="$({
-            awk -F' *\\| *' '
-              $1 ~ /^system-images;android-(37([.][0-9A-Za-z._-]+)?|CinnamonBun);/ &&
-              $1 ~ /;x86_64$/ {
-                gsub(/^[ \t]+|[ \t]+$/, "", $1)
-                print $1
-              }
-            ' "$SDK_LIST"
-          } | grep -E ';(google_apis|google_apis_playstore|default);x86_64$' | sort -V | tail -n 1)"
-
-          if [[ -z "$IMAGE" ]]; then
-            echo "No Android 17 x86_64 emulator system image is currently published on Canary." >&2
-            echo "Available Android 17 image candidates:" >&2
-            grep -E 'system-images;.*(37|CinnamonBun).*;x86_64' "$SDK_LIST" >&2 || true
+          if ! grep -Fq "$IMAGE" "$SDK_LIST"; then
+            echo "Expected Android 17 x86_64 image is not published: $IMAGE" >&2
+            echo "Available Android 17 x86_64 images:" >&2
+            grep -E 'system-images;android-37([.][0-9A-Za-z._-]+)?;.*;x86_64' "$SDK_LIST" >&2 || true
             exit 1
           fi
 
@@ -102,6 +92,7 @@ jobs:
           sdkmanager --install "$IMAGE" --channel=3
           sdkmanager --list_installed
           test -d "$ANDROID_SDK_ROOT/platforms/android-37.0"
+          test -d "$ANDROID_SDK_ROOT/system-images/android-37.0/google_apis/x86_64"
 
       - name: Setup Gradle 9.6
         uses: gradle/actions/setup-gradle@v6
