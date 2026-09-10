@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 axuielement = { version = "=0.9.1", features = ["async"] }
+nvda-rust-uia-standalone = { path = "../.." }
 
 [lints.rust]
 unsafe_code = "forbid"
