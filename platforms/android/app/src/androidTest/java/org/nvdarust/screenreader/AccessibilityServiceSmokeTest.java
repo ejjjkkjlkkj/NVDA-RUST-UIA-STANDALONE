@@ -1,16 +1,25 @@
 package org.nvdarust.screenreader;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
 import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.provider.Settings;
-import android.test.InstrumentationTestCase;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
-public final class AccessibilityServiceSmokeTest extends InstrumentationTestCase {
-    public void testServiceIsDeclaredWithAccessibilityPermission() throws Exception {
-        Context context = getInstrumentation().getTargetContext();
+@RunWith(AndroidJUnit4.class)
+public final class AccessibilityServiceSmokeTest {
+    @Test
+    public void serviceIsDeclaredWithAccessibilityPermission() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         ComponentName component = new ComponentName(context, ScreenReaderAccessibilityService.class);
         ServiceInfo info = context.getPackageManager().getServiceInfo(component, PackageManager.GET_META_DATA);
 
@@ -19,8 +28,9 @@ public final class AccessibilityServiceSmokeTest extends InstrumentationTestCase
         assertNotNull(info.metaData);
     }
 
-    public void testServiceIsEnabledByEmulatorHarness() {
-        Context context = getInstrumentation().getTargetContext();
+    @Test
+    public void serviceIsEnabledByEmulatorHarness() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         ComponentName component = new ComponentName(context, ScreenReaderAccessibilityService.class);
         String enabled = Settings.Secure.getString(
                 context.getContentResolver(),
