@@ -1,0 +1,48 @@
+name: Screen Reader Command Core
+
+on:
+  push:
+    branches: [automation/nvda-command-core]
+    paths:
+      - "src/commands.rs"
+      - "src/navigation.rs"
+      - "src/lib.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/command-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: command-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Command and gesture semantics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: command-core
+
+      - name: Validate command core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo test --lib --locked
+          cargo clippy --lib --locked --no-deps -- -D warnings
