@@ -3,13 +3,15 @@ mod windows_diagnostics;
 #[cfg(windows)]
 mod windows_runtime_v2;
 #[cfg(windows)]
+mod windows_runtime_v3;
+#[cfg(windows)]
 mod windows_speech;
 #[cfg(windows)]
 mod windows_textpattern2;
 
 #[cfg(windows)]
 fn main() -> windows_core::Result<()> {
-    windows_runtime_v2::run()
+    windows_runtime_v3::run()
 }
 
 #[cfg(not(windows))]
