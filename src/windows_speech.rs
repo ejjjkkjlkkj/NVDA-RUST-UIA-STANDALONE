@@ -17,10 +17,6 @@ struct SpeechEngine {
 }
 
 enum SpeechCommand {
-    Queued {
-        sequence: u64,
-        text: String,
-    },
     Replace {
         sequence: u64,
         generation: u64,
@@ -108,20 +104,6 @@ fn output_fail(sequence: u64, error: &windows_core::Error) {
     eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | {error}");
 }
 
-fn render(engine: &SpeechEngine, sequence: u64, text: &str) {
-    let result = (|| -> Result<()> {
-        let source = synthesize(engine, text)?;
-        engine.player.SetSource(&source)?;
-        engine.player.Play()?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => output_pass(sequence, text),
-        Err(error) => output_fail(sequence, &error),
-    }
-}
-
 fn render_replaceable(engine: &SpeechEngine, sequence: u64, generation: u64, text: &str) {
     if generation != LATEST_REPLACE_GENERATION.load(Ordering::Acquire) {
         output_replaced(sequence, text);
@@ -179,7 +161,6 @@ fn speech_worker(receiver: mpsc::Receiver<SpeechCommand>, ready: mpsc::SyncSende
 
     while let Ok(command) = receiver.recv() {
         match command {
-            SpeechCommand::Queued { sequence, text } => render(&engine, sequence, &text),
             SpeechCommand::Replace {
                 sequence,
                 generation,
@@ -258,22 +239,6 @@ pub fn speak(text: &str) {
         },
         sequence,
     );
-}
-
-/// Speak content that must remain ordered and must not be superseded by newer
-/// interactive feedback. Reserved for future say-all, explicit read commands
-/// and other sequence-preserving output.
-pub fn speak_queued(text: &str) {
-    let Some(text) = prepare_text(text) else {
-        return;
-    };
-
-    let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    println!(
-        "SPEECH_REQUEST #{sequence} | mode=queue | {}",
-        crate::windows_diagnostics::text(&text)
-    );
-    enqueue(SpeechCommand::Queued { sequence, text }, sequence);
 }
 
 fn flush() {
