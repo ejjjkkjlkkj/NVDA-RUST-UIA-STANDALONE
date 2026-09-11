@@ -95,11 +95,16 @@ foreach ($marker in @(
     'DIAGNOSTIC_TEXT_POLICY = REDACTED_DEFAULT',
     'PASSWORD_TEXT_POLICY = ALWAYS_REDACTED',
     'SPEECH_OUTPUT_INIT = PASS',
-    '<redacted chars='
+    '<redacted>'
 )) {
     if (-not $log.Contains($marker)) {
         throw "Missing privacy marker: $marker"
     }
+}
+
+# Production diagnostics must reveal neither content nor content length.
+if ($log -match '<redacted chars=\d+>') {
+    throw 'DIAGNOSTIC_PRIVACY length disclosure detected'
 }
 
 # These known fixture strings are non-password data. Their absence proves that
@@ -118,10 +123,10 @@ foreach ($forbidden in @(
 
 $redactedSpeech = @(
     ($log -split "`r?`n") |
-        Where-Object { $_ -match '^SPEECH_(REQUEST|OUTPUT) #' -and $_ -match '<redacted chars=\d+>' }
+        Where-Object { $_ -match '^SPEECH_(REQUEST|OUTPUT) #' -and $_ -match '<redacted>' }
 )
 if ($redactedSpeech.Count -lt 1) {
     throw 'No redacted speech evidence was captured'
 }
 
-"DIAGNOSTIC_REDACTION_E2E = PASS | plaintext_leaks=0 | redacted_speech_lines=$($redactedSpeech.Count) | default_policy=true"
+"DIAGNOSTIC_REDACTION_E2E = PASS | plaintext_leaks=0 | length_leaks=0 | redacted_speech_lines=$($redactedSpeech.Count) | default_policy=true"
