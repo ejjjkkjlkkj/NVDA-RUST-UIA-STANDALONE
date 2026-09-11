@@ -1,13 +1,14 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::hash_map::RandomState,
     env,
-    hash::{Hash, Hasher},
+    hash::{BuildHasher, Hash, Hasher},
     sync::OnceLock,
 };
 
 const MAX_DIAGNOSTIC_TEXT_CHARS: usize = 1024;
 const MAX_SPEECH_TEXT_CHARS: usize = 2048;
 static INCLUDE_SENSITIVE_TEXT: OnceLock<bool> = OnceLock::new();
+static IDENTITY_HASH_STATE: OnceLock<RandomState> = OnceLock::new();
 
 fn parse_opt_in(value: Option<String>) -> bool {
     value
@@ -55,7 +56,8 @@ pub fn text(value: &str) -> String {
     if include_sensitive_text() {
         one_line(value)
     } else {
-        format!("<redacted chars={}>", value.chars().count())
+        let _ = value;
+        "<redacted>".to_string()
     }
 }
 
@@ -75,7 +77,8 @@ pub fn speech_text(value: &str) -> String {
 }
 
 pub fn identity_key(parts: &[&str]) -> String {
-    let mut hasher = DefaultHasher::new();
+    let state = IDENTITY_HASH_STATE.get_or_init(RandomState::new);
+    let mut hasher = state.build_hasher();
     for part in parts {
         part.hash(&mut hasher);
     }
@@ -93,11 +96,12 @@ pub fn print_policy_marker() {
         "UNTRUSTED_TEXT_LIMITS = speech_chars:{} diagnostic_chars:{}",
         MAX_SPEECH_TEXT_CHARS, MAX_DIAGNOSTIC_TEXT_CHARS
     );
+    println!("IDENTITY_STORAGE_POLICY = PROCESS_KEYED_HASH");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{identity_key, parse_opt_in, sanitize_untrusted, speech_text};
+    use super::{identity_key, parse_opt_in, sanitize_untrusted, speech_text, text};
 
     #[test]
     fn diagnostic_text_requires_explicit_opt_in() {
@@ -106,6 +110,14 @@ mod tests {
         assert!(!parse_opt_in(Some("false".to_string())));
         assert!(parse_opt_in(Some("1".to_string())));
         assert!(parse_opt_in(Some("TRUE".to_string())));
+    }
+
+    #[test]
+    fn default_redaction_hides_content_and_length() {
+        if !super::include_sensitive_text() {
+            assert_eq!(text("a"), "<redacted>");
+            assert_eq!(text("a much longer private value"), "<redacted>");
+        }
     }
 
     #[test]
@@ -125,8 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn identity_key_does_not_retain_plaintext() {
-        let key = identity_key(&["private document title", "secret automation id"]);
+    fn identity_key_is_stable_in_process_without_retaining_plaintext() {
+        let parts = ["private document title", "secret automation id"];
+        let key = identity_key(&parts);
+        assert_eq!(key, identity_key(&parts));
         assert_eq!(key.len(), 16);
         assert!(!key.contains("private"));
         assert!(!key.contains("secret"));
