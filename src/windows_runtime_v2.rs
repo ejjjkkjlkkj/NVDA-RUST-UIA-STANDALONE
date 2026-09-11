@@ -393,6 +393,9 @@ impl IUIAutomationEventHandler_Impl for EventSink_Impl {
             emit(AccessibilityEventKind::TextChanged, n, sender);
         } else if eventid == TEXT_SELECTION_CHANGED_EVENT {
             let n = TEXT_SELECTION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(element) = sender.as_ref() {
+                crate::windows_textpattern2::inspect_selection(n, element);
+            }
             emit(AccessibilityEventKind::TextSelectionChanged, n, sender);
         }
         Ok(())
@@ -447,6 +450,7 @@ pub fn run() -> Result<()> {
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_FOCUS_POLL_FALLBACK = ENABLED");
         println!("UIA_STATE_POLL_FALLBACK = VALUE_TOGGLE_EVENT_SAMPLING");
+        crate::windows_textpattern2::print_init_marker();
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
@@ -488,6 +492,7 @@ pub fn run() -> Result<()> {
             CACHE_FULL_HIT_EVENTS.load(Ordering::Relaxed),
             CACHE_FALLBACK_PROPERTIES.load(Ordering::Relaxed)
         );
+        crate::windows_textpattern2::print_summary();
         crate::windows_speech::print_summary();
         println!("UIA_NATIVE_EVENTS_RUNTIME = PASS");
     }

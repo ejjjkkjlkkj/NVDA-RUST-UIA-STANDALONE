@@ -2,6 +2,8 @@
 mod windows_runtime_v2;
 #[cfg(windows)]
 mod windows_speech;
+#[cfg(windows)]
+mod windows_textpattern2;
 
 #[cfg(windows)]
 fn main() -> windows_core::Result<()> {
