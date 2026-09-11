@@ -31,6 +31,8 @@ New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 
 $stdout = Join-Path $EvidenceDir 'screen-reader.stdout.txt'
 $stderr = Join-Path $EvidenceDir 'screen-reader.stderr.txt'
+$fixtureStdout = Join-Path $EvidenceDir 'fixture.stdout.txt'
+$fixtureStderr = Join-Path $EvidenceDir 'fixture.stderr.txt'
 $controllerLog = Join-Path $EvidenceDir 'keyboard-controller.log'
 $summaryPath = Join-Path $EvidenceDir 'blind-user-summary.json'
 $nativeProbePath = Join-Path $EvidenceDir 'native-app-probe.json'
@@ -203,12 +205,30 @@ $nativeProbe = $null
 try {
     Start-Sleep -Seconds 2
 
-    $fixtureCommandLine = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$fixtureScript`" -EvidenceDir `"$EvidenceDir`""
-    $fixture = Start-Process -FilePath 'powershell.exe' -ArgumentList $fixtureCommandLine -PassThru
-    Write-ControllerEvent -Kind 'START' -Value "fixture|pid=$($fixture.Id)"
+    $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    $fixtureArguments = @(
+        '-NoProfile',
+        '-STA',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $fixtureScript,
+        '-EvidenceDir', $EvidenceDir
+    )
+    $fixture = Start-Process -FilePath $pwsh -ArgumentList $fixtureArguments `
+        -RedirectStandardOutput $fixtureStdout `
+        -RedirectStandardError $fixtureStderr `
+        -PassThru
+    Write-ControllerEvent -Kind 'START' -Value "fixture|pid=$($fixture.Id)|host=$pwsh"
 
     $readyPath = Join-Path $EvidenceDir 'fixture-ready.json'
-    Wait-ForFile -Path $readyPath -Seconds 12 -Process $fixture
+    try {
+        Wait-ForFile -Path $readyPath -Seconds 12 -Process $fixture
+    }
+    catch {
+        $bootstrapPath = Join-Path $EvidenceDir 'fixture-bootstrap.log'
+        $bootstrap = if (Test-Path $bootstrapPath) { Get-Content $bootstrapPath -Raw } else { '<none>' }
+        $fixtureError = if (Test-Path $fixtureStderr) { Get-Content $fixtureStderr -Raw } else { '<none>' }
+        throw "$($_.Exception.Message) | bootstrap=$bootstrap | fixture_stderr=$fixtureError"
+    }
     $ready = Get-Content $readyPath -Raw | ConvertFrom-Json
     $fixturePid = [int]$ready.pid
 
