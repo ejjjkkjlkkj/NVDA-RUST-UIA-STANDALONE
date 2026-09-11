@@ -99,7 +99,7 @@ function Send-UserKeys {
     Start-Sleep -Milliseconds $DelayMs
 }
 
-function Invoke-OptionalNotepadProbe {
+function Invoke-NotepadProbe {
     param(
         [Parameter(Mandatory = $true)][string]$OutputPath
     )
@@ -108,6 +108,7 @@ function Invoke-OptionalNotepadProbe {
         attempted = $false
         windowAvailable = $false
         keyboardInputSent = $false
+        selectionInputSent = $false
         pid = 0
         windowHandle = 0
         error = $null
@@ -150,6 +151,11 @@ function Invoke-OptionalNotepadProbe {
         Focus-Window -Handle $handle -Label 'Notepad native application'
         Send-UserKeys -Label 'notepad-type' -Keys 'native blind user keyboard probe'
         $result.keyboardInputSent = $true
+        Send-UserKeys -Label 'notepad-select-left-1' -Keys '+{LEFT}'
+        Send-UserKeys -Label 'notepad-select-left-2' -Keys '+{LEFT}'
+        Send-UserKeys -Label 'notepad-select-left-3' -Keys '+{LEFT}'
+        Send-UserKeys -Label 'notepad-select-left-4' -Keys '+{LEFT}'
+        $result.selectionInputSent = $true
         Start-Sleep -Milliseconds 800
     }
     catch {
@@ -183,7 +189,7 @@ if (-not (Test-Path $fixtureScript)) {
 
 $readerArguments = @{
     FilePath = $ScreenReaderExe
-    ArgumentList = @('24')
+    ArgumentList = @('30')
     RedirectStandardOutput = $stdout
     RedirectStandardError = $stderr
     PassThru = $true
@@ -212,7 +218,7 @@ try {
 
     Focus-Window -Handle ([int64]$ready.windowHandle) -Label 'blind-user fixture'
 
-    # All functional interaction below is keyboard-only. No mouse input is synthesized.
+    # Functional interaction is deliberately keyboard-only. No mouse input is synthesized.
     Send-UserKeys -Label 'select-all-document' -Keys '^a'
     Send-UserKeys -Label 'type-document' -Keys 'blind user typed text'
     Send-UserKeys -Label 'tab-to-checkbox' -Keys '{TAB}'
@@ -222,7 +228,7 @@ try {
     Send-UserKeys -Label 'tab-to-apply' -Keys '{TAB}'
     Send-UserKeys -Label 'activate-apply' -Keys '{ENTER}'
 
-    # Reverse navigation is important for real keyboard use, not only forward Tab traversal.
+    # Reverse navigation matters for daily keyboard use, not only forward Tab traversal.
     Send-UserKeys -Label 'reverse-to-mode' -Keys '+{TAB}'
     Send-UserKeys -Label 'reverse-to-checkbox' -Keys '+{TAB}'
     Send-UserKeys -Label 'reverse-to-editor' -Keys '+{TAB}'
@@ -234,9 +240,8 @@ try {
 
     Start-Sleep -Milliseconds 800
 
-    # Additional best-effort probe against a real Windows application.
-    # It is evidence only because packaged Notepad availability differs across GitHub runner images.
-    $nativeProbe = Invoke-OptionalNotepadProbe -OutputPath $nativeProbePath
+    # Probe a real inbox application surface as well as our deterministic fixture.
+    $nativeProbe = Invoke-NotepadProbe -OutputPath $nativeProbePath
 
     Focus-Window -Handle ([int64]$ready.windowHandle) -Label 'blind-user fixture before close'
     Send-UserKeys -Label 'close-window' -Keys '%{F4}'
@@ -249,7 +254,7 @@ try {
         throw "Fixture exited with code $($fixture.ExitCode)"
     }
 
-    if (-not $reader.WaitForExit(30000)) {
+    if (-not $reader.WaitForExit(35000)) {
         Stop-Process -Id $reader.Id -Force -ErrorAction SilentlyContinue
         throw 'Screen reader monitor did not exit in time'
     }
@@ -315,21 +320,32 @@ foreach ($name in $expectedFocusNames) {
     }
 }
 
-$textEvents = @(
+$fixtureValueEvents = @(
     $fixtureUiaLines |
-        Where-Object { $_ -match '^TEXT_CHANGED/UIA_20015 #' -and $_ -match 'Name=Blind user document(?:\s*\||$)' }
+        Where-Object {
+            $_ -match '^PROPERTY_CHANGED/UIA_30045\[ValueValue\]' -and
+            $_ -match 'Name=Blind user document(?:\s*\||$)'
+        }
 )
-if ($textEvents.Count -lt 1) {
-    throw 'Typing did not produce a UIA TextChanged event for the controlled document'
+if ($fixtureValueEvents.Count -lt 1) {
+    throw 'WinForms editing changed the document but UIA ValueValue property fallback was not captured'
 }
 
-$selectionEvents = @(
+$fixtureToggleEvents = @(
     $fixtureUiaLines |
-        Where-Object { $_ -match '^TEXT_SELECTION_CHANGED/UIA_20014 #' -and $_ -match 'Name=Blind user document(?:\s*\||$)' }
+        Where-Object {
+            $_ -match '^PROPERTY_CHANGED/UIA_30086\[ToggleToggleState\]' -and
+            $_ -match 'Name=Enable feature(?:\s*\||$)'
+        }
 )
-if ($selectionEvents.Count -lt 1) {
-    throw 'Keyboard selection did not produce a UIA TextSelectionChanged event for the controlled document'
+if ($fixtureToggleEvents.Count -lt 1) {
+    throw 'Checkbox state changed but UIA ToggleToggleState property event was not captured'
 }
+
+$fixtureSelectionItemEvents = @(
+    $fixtureUiaLines |
+        Where-Object { $_ -match '^PROPERTY_CHANGED/UIA_30079\[SelectionItemIsSelected\]' }
+)
 
 $fixtureAssertions = @(
     '\|TEXT\|Editor\|blind user typed text',
@@ -351,31 +367,45 @@ $keyboardActions = @(
     Get-Content $controllerLog |
         Where-Object { $_ -match '\|KEYBOARD\|' }
 )
-if ($keyboardActions.Count -lt 16) {
-    throw "Expected at least 16 external keyboard actions, observed $($keyboardActions.Count)"
+if ($keyboardActions.Count -lt 20) {
+    throw "Expected at least 20 external keyboard actions, observed $($keyboardActions.Count)"
 }
 
 $counts = [regex]::Match(
     $screenReaderLog,
-    'COUNTS \| focus=(\d+) \| text_changed=(\d+) \| text_selection=(\d+)'
+    'COUNTS \| focus=(\d+) \| text_changed=(\d+) \| text_selection=(\d+) \| property_changed=(\d+)'
 )
 if (-not $counts.Success) {
-    throw 'Unable to parse global UIA event counts'
+    throw 'Unable to parse global UIA event counts including property changes'
 }
 
-$nativeFixtureLines = @()
-if ($null -ne $nativeProbe -and $nativeProbe.pid -gt 0) {
-    $nativePidPattern = "PID=$($nativeProbe.pid)\s*\|"
-    $nativeFixtureLines = @(
-        ($screenReaderLog -split "`r?`n") |
-            Where-Object { $_ -match $nativePidPattern }
-    )
-    $nativeFixtureLines |
-        Set-Content -Path (Join-Path $EvidenceDir 'native-app-uia-events.txt') -Encoding utf8
+if ($null -eq $nativeProbe -or -not $nativeProbe.windowAvailable -or -not $nativeProbe.keyboardInputSent) {
+    throw "Real Notepad keyboard probe was not available: $($nativeProbe.error)"
 }
+
+$nativePidPattern = "PID=$($nativeProbe.pid)\s*\|"
+$nativeUiaLines = @(
+    ($screenReaderLog -split "`r?`n") |
+        Where-Object { $_ -match $nativePidPattern }
+)
+$nativeUiaLines |
+    Set-Content -Path (Join-Path $EvidenceDir 'native-app-uia-events.txt') -Encoding utf8
+
+$nativeTextEvents = @(
+    $nativeUiaLines |
+        Where-Object { $_ -match '^TEXT_CHANGED/UIA_20015 #' }
+)
+if ($nativeTextEvents.Count -lt 1) {
+    throw 'Real Notepad typing did not produce a UIA TextChanged event'
+}
+
+$nativeSelectionEvents = @(
+    $nativeUiaLines |
+        Where-Object { $_ -match '^TEXT_SELECTION_CHANGED/UIA_20014 #' }
+)
 
 $summary = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     platform = 'windows'
     scenario = 'blind-user-keyboard-e2e'
     pass = $true
@@ -384,17 +414,19 @@ $summary = [ordered]@{
     externalKeyboardActions = $keyboardActions.Count
     fixturePid = $fixturePid
     fixtureUiaEvents = $fixtureUiaLines.Count
-    fixtureTextChangedEvents = $textEvents.Count
-    fixtureTextSelectionEvents = $selectionEvents.Count
+    fixtureValuePropertyEvents = $fixtureValueEvents.Count
+    fixtureTogglePropertyEvents = $fixtureToggleEvents.Count
+    fixtureSelectionItemPropertyEvents = $fixtureSelectionItemEvents.Count
     expectedFocusNames = $expectedFocusNames
     focusEventsByAccessibleName = $focusProof
+    nativeAppPid = [int]$nativeProbe.pid
+    nativeAppUiaEvents = $nativeUiaLines.Count
+    nativeAppTextChangedEvents = $nativeTextEvents.Count
+    nativeAppTextSelectionEvents = $nativeSelectionEvents.Count
     globalFocusEvents = [int64]$counts.Groups[1].Value
     globalTextChangedEvents = [int64]$counts.Groups[2].Value
     globalTextSelectionEvents = [int64]$counts.Groups[3].Value
-    nativeAppProbeAttempted = [bool]$nativeProbe.attempted
-    nativeAppWindowAvailable = [bool]$nativeProbe.windowAvailable
-    nativeAppKeyboardInputSent = [bool]$nativeProbe.keyboardInputSent
-    nativeAppUiaEvents = $nativeFixtureLines.Count
+    globalPropertyChangedEvents = [int64]$counts.Groups[4].Value
     nvdaOfficialReference = [ordered]@{
         repository = $nvdaBaseline.repository
         branch = $nvdaBaseline.branch
@@ -403,14 +435,15 @@ $summary = [ordered]@{
         runtimeExecutedInThisScenario = $false
     }
     currentLimitations = @(
-        'No speech/TTS assertion yet',
+        'No speech/TTS output assertion yet',
         'No braille output assertion yet',
         'No NVDA-vs-Rust runtime speech comparison yet',
-        'Native Notepad probe is informational because runner images differ'
+        'WinForms caret/selection UIA event support is not yet guaranteed',
+        'Combo-box provider behavior still needs NVDA-equivalent fallback coverage'
     )
 }
 
 $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding utf8
 
-"BLIND_USER_KEYBOARD_E2E = PASS | keyboard_actions=$($keyboardActions.Count) | fixture_uia_events=$($fixtureUiaLines.Count) | text_changed=$($textEvents.Count) | text_selection=$($selectionEvents.Count) | native_app_uia_events=$($nativeFixtureLines.Count) | nvda_baseline=$($nvdaBaseline.sha)" |
+"BLIND_USER_KEYBOARD_E2E = PASS | keyboard_actions=$($keyboardActions.Count) | fixture_uia_events=$($fixtureUiaLines.Count) | value_events=$($fixtureValueEvents.Count) | toggle_events=$($fixtureToggleEvents.Count) | native_text_changed=$($nativeTextEvents.Count) | native_text_selection=$($nativeSelectionEvents.Count) | nvda_baseline=$($nvdaBaseline.sha)" |
     Tee-Object -FilePath (Join-Path $EvidenceDir 'result.txt')
