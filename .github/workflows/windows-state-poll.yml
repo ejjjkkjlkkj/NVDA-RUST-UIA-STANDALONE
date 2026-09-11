@@ -1,0 +1,53 @@
+name: Windows State Poll Fallback
+
+on:
+  push:
+    branches: [automation/state-poll]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-state-poll.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-state-poll-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  state-poll-e2e:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Smoke-test fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\tests\windows\SmokeBlindUserFixture.ps1' -EvidenceDir (Join-Path $PWD 'state-poll-smoke')
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Build screen reader
+        shell: pwsh
+        run: cargo build --release --locked
+      - name: Run keyboard E2E with state fallback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\tests\windows\RunBlindUserKeyboardE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir (Join-Path $PWD 'state-poll-evidence')
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-state-poll-evidence
+          path: state-poll-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
