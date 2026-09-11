@@ -86,8 +86,10 @@ $form.Controls.AddRange(@($heading, $editor, $check, $mode, $apply, $status))
 
 $editor.Add_GotFocus({ Write-FixtureEvent -Kind 'FOCUS' -Name 'Editor' -Value $editor.Text })
 $editor.Add_TextChanged({ Write-FixtureEvent -Kind 'TEXT' -Name 'Editor' -Value $editor.Text })
-$editor.Add_SelectionChanged({
-    Write-FixtureEvent -Kind 'SELECTION' -Name 'Editor' -Value "$($editor.SelectionStart):$($editor.SelectionLength)"
+$editor.Add_KeyUp({
+    if ($editor.SelectionLength -gt 0) {
+        Write-FixtureEvent -Kind 'SELECTION' -Name 'Editor' -Value "$($editor.SelectionStart):$($editor.SelectionLength)"
+    }
 })
 
 $check.Add_GotFocus({ Write-FixtureEvent -Kind 'FOCUS' -Name 'EnableFeature' -Value ([string]$check.Checked) })
