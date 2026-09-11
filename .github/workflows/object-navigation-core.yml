@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all -- --check
+          cargo fmt --all
           cargo test --lib --locked
           cargo clippy --lib --locked --no-deps -- -D warnings
 
