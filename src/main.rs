@@ -1,11 +1,11 @@
 #[cfg(windows)]
-mod windows_app;
+mod windows_runtime;
 #[cfg(windows)]
 mod windows_speech;
 
 #[cfg(windows)]
 fn main() -> windows_core::Result<()> {
-    windows_app::run()
+    windows_runtime::run()
 }
 
 #[cfg(not(windows))]
