@@ -36,6 +36,8 @@ static TEXT_PATTERN2_COUNT: AtomicU64 = AtomicU64::new(0);
 static CARET_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SELECTION_TEXT_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_PATTERN2_PROTECTED_COUNT: AtomicU64 = AtomicU64::new(0);
+static CARET_SPEECH_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_SPEECH_COUNT: AtomicU64 = AtomicU64::new(0);
 
 struct ComApartment;
 impl ComApartment {
@@ -61,14 +63,59 @@ fn bstr(value: Result<BSTR>) -> String {
         .unwrap_or_else(|_| "<unavailable>".to_string())
 }
 
-fn one_line(value: BSTR) -> String {
+fn log_text(value: &str) -> String {
     value
-        .display()
-        .to_string()
         .replace('\\', "\\\\")
         .replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('|', "\\|")
+}
+
+fn speech_text(value: &str) -> String {
+    match value {
+        " " => "space".to_string(),
+        "\t" => "tab".to_string(),
+        "\r" | "\n" | "\r\n" => "new line".to_string(),
+        _ => value
+            .replace("\r\n", " new line ")
+            .replace('\r', " new line ")
+            .replace('\n', " new line ")
+            .replace('\t', " tab ")
+            .trim()
+            .to_string(),
+    }
+}
+
+unsafe fn caret_character(range: &IUIAutomationTextRange) -> Option<String> {
+    let forward = unsafe { range.Clone().ok()? };
+    let moved_forward = unsafe {
+        forward
+            .MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, 1)
+            .ok()?
+    };
+    if moved_forward != 0 {
+        let raw = unsafe { forward.GetText(8).ok()? }.display().to_string();
+        let phrase = speech_text(&raw);
+        if !phrase.is_empty() {
+            return Some(phrase);
+        }
+    }
+
+    let backward = unsafe { range.Clone().ok()? };
+    let moved_backward = unsafe {
+        backward
+            .MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1)
+            .ok()?
+    };
+    if moved_backward != 0 {
+        let raw = unsafe { backward.GetText(8).ok()? }.display().to_string();
+        let phrase = speech_text(&raw);
+        if !phrase.is_empty() {
+            return Some(phrase);
+        }
+    }
+
+    None
 }
 
 fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
@@ -220,7 +267,7 @@ fn emit_text_pattern2(sequence: u64, element: &IUIAutomationElement) {
         if is_password {
             TEXT_PATTERN2_PROTECTED_COUNT.fetch_add(1, Ordering::Relaxed);
             println!(
-                "TEXT_PATTERN2 #{sequence} | PID={process_id} | protected=password | caret_active=<redacted> | selection_ranges=<redacted> | selection_text=<redacted>"
+                "TEXT_PATTERN2 #{sequence} | PID={process_id} | protected=password | caret_active=<redacted> | selection_ranges=<redacted> | selection_text=<redacted> | speech=<redacted>"
             );
             return;
         }
@@ -238,19 +285,22 @@ fn emit_text_pattern2(sequence: u64, element: &IUIAutomationElement) {
         };
 
         let mut active = windows_core::BOOL::default();
-        if let Err(error) = pattern.GetCaretRange(&mut active) {
-            println!(
-                "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=caret-error | error={error}"
-            );
-            return;
-        }
+        let caret_range = match pattern.GetCaretRange(&mut active) {
+            Ok(range) => range,
+            Err(error) => {
+                println!(
+                    "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=caret-error | error={error}"
+                );
+                return;
+            }
+        };
 
         TEXT_PATTERN2_COUNT.fetch_add(1, Ordering::Relaxed);
         if active.as_bool() {
             CARET_ACTIVE_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
-        let mut selected_parts = Vec::new();
+        let mut selected_parts: Vec<String> = Vec::new();
         let selection_ranges = match pattern.GetSelection() {
             Ok(ranges) => {
                 let length = ranges.Length().unwrap_or_default().max(0);
@@ -261,9 +311,9 @@ fn emit_text_pattern2(sequence: u64, element: &IUIAutomationElement) {
                     let Ok(text) = range.GetText(512) else {
                         continue;
                     };
-                    let text = one_line(text);
-                    if !text.is_empty() {
-                        selected_parts.push(text);
+                    let raw = text.display().to_string();
+                    if !raw.is_empty() {
+                        selected_parts.push(raw);
                     }
                 }
                 length
@@ -271,15 +321,52 @@ fn emit_text_pattern2(sequence: u64, element: &IUIAutomationElement) {
             Err(_) => -1,
         };
 
-        let selection_text = if selected_parts.is_empty() {
+        let selection_log = if selected_parts.is_empty() {
             "<none>".to_string()
         } else {
             SELECTION_TEXT_COUNT.fetch_add(1, Ordering::Relaxed);
-            selected_parts.join(" || ")
+            selected_parts
+                .iter()
+                .map(|part| log_text(part))
+                .collect::<Vec<_>>()
+                .join(" || ")
         };
 
+        let speech_kind;
+        let speech_log;
+        if !selected_parts.is_empty() {
+            let phrase = selected_parts
+                .iter()
+                .map(|part| speech_text(part))
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if phrase.is_empty() {
+                speech_kind = "none";
+                speech_log = "<none>".to_string();
+            } else {
+                crate::windows_speech::speak(&phrase);
+                SELECTION_SPEECH_COUNT.fetch_add(1, Ordering::Relaxed);
+                speech_kind = "selection";
+                speech_log = log_text(&phrase);
+            }
+        } else if active.as_bool() {
+            if let Some(phrase) = caret_character(&caret_range) {
+                crate::windows_speech::speak(&phrase);
+                CARET_SPEECH_COUNT.fetch_add(1, Ordering::Relaxed);
+                speech_kind = "caret-character";
+                speech_log = log_text(&phrase);
+            } else {
+                speech_kind = "none";
+                speech_log = "<none>".to_string();
+            }
+        } else {
+            speech_kind = "none";
+            speech_log = "<none>".to_string();
+        }
+
         println!(
-            "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_text}",
+            "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_log} | speech_kind={speech_kind} | speech_text={speech_log}",
             active.as_bool()
         );
     }
@@ -416,6 +503,7 @@ pub fn run() -> Result<()> {
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("TEXT_PATTERN2_CARET_SELECTION = ENABLED");
+        println!("TEXT_NAVIGATION_SPEECH = ENABLED");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
 
@@ -445,6 +533,11 @@ pub fn run() -> Result<()> {
             CARET_ACTIVE_COUNT.load(Ordering::Relaxed),
             SELECTION_TEXT_COUNT.load(Ordering::Relaxed),
             TEXT_PATTERN2_PROTECTED_COUNT.load(Ordering::Relaxed)
+        );
+        println!(
+            "TEXT_NAV_SPEECH_COUNTS | caret_character={} | selection={}",
+            CARET_SPEECH_COUNT.load(Ordering::Relaxed),
+            SELECTION_SPEECH_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
