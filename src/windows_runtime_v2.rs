@@ -14,6 +14,7 @@ const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
 const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
 const VALUE_PATTERN: PATTERNID = PATTERNID(10002);
 const TOGGLE_PATTERN: PATTERNID = PATTERNID(10015);
+const COMBO_BOX_CONTROL_TYPE_ID: i32 = 50003;
 const PROCESS_ID_PROPERTY: PROPERTYID = PROPERTYID(30002);
 const LOCALIZED_CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30004);
 const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
@@ -296,16 +297,24 @@ fn sample_control_state(
             .ok()
             .and_then(|pattern| pattern.CurrentToggleState().ok())
     };
+    let is_combo_box = unsafe {
+        element
+            .CurrentControlType()
+            .map(|control_type| control_type.0 == COMBO_BOX_CONTROL_TYPE_ID)
+            .unwrap_or(false)
+    };
 
     let Ok(mut states) = POLLED_STATES.lock() else {
         return;
     };
 
-    let mut value_changed = false;
+    let mut changed_value = None;
     let mut toggle_changed = None;
     if let Some(index) = states.iter().position(|state| state.identity == identity) {
         let old = &mut states[index];
-        value_changed = old.value != value && old.value.is_some() && value.is_some();
+        if old.value != value && old.value.is_some() && value.is_some() {
+            changed_value = value.clone();
+        }
         if old.toggle != toggle && old.toggle.is_some() && toggle.is_some() {
             toggle_changed = toggle;
         }
@@ -323,7 +332,7 @@ fn sample_control_state(
     }
     drop(states);
 
-    if value_changed {
+    if let Some(value) = changed_value {
         let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         if source == "poll" {
             PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -331,6 +340,14 @@ fn sample_control_state(
             PROPERTY_EVENT_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
         }
         emit_property_observation(sequence, VALUE_VALUE_PROPERTY, observation, source);
+
+        if is_combo_box {
+            let phrase = value.trim();
+            if !phrase.is_empty() {
+                println!("VALUE_SPEECH #{sequence} | control=combo-box | value={phrase}");
+                crate::windows_speech::speak(phrase);
+            }
+        }
     }
 
     if let Some(state) = toggle_changed {
