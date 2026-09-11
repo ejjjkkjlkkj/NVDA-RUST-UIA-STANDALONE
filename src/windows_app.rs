@@ -20,10 +20,19 @@ const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
 const AUTOMATION_ID_PROPERTY: PROPERTYID = PROPERTYID(30011);
 const CLASS_NAME_PROPERTY: PROPERTYID = PROPERTYID(30012);
 const FRAMEWORK_ID_PROPERTY: PROPERTYID = PROPERTYID(30024);
+const VALUE_VALUE_PROPERTY: PROPERTYID = PROPERTYID(30045);
+const SELECTION_ITEM_IS_SELECTED_PROPERTY: PROPERTYID = PROPERTYID(30079);
+const TOGGLE_TOGGLE_STATE_PROPERTY: PROPERTYID = PROPERTYID(30086);
+const PROPERTY_CHANGE_PROPERTIES: [PROPERTYID; 3] = [
+    VALUE_VALUE_PROPERTY,
+    SELECTION_ITEM_IS_SELECTED_PROPERTY,
+    TOGGLE_TOGGLE_STATE_PROPERTY,
+];
 
 static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
+static PROPERTY_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
 
@@ -78,10 +87,9 @@ fn event_cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> 
     }
 }
 
-fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
+fn snapshot_sender(sender: Ref<IUIAutomationElement>) -> Option<ElementSnapshot> {
     let Some(element) = sender.as_ref() else {
-        eprintln!("{kind} #{sequence} | sender=NULL");
-        return;
+        return None;
     };
 
     unsafe {
@@ -141,17 +149,56 @@ fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAuto
             CACHE_FALLBACK_PROPERTIES.fetch_add(fallback_properties, Ordering::Relaxed);
         }
 
-        let snapshot = ElementSnapshot {
+        Some(ElementSnapshot {
             process_id,
             framework,
             class_name,
             role,
             name,
             automation_id,
-        };
-
-        println!("{}", format_event_line(kind, sequence, &snapshot));
+        })
     }
+}
+
+fn print_sender(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
+    let Some(snapshot) = snapshot_sender(sender) else {
+        eprintln!("{kind} #{sequence} | sender=NULL");
+        return;
+    };
+
+    println!("{}", format_event_line(kind, sequence, &snapshot));
+}
+
+fn print_property_sender(
+    sequence: u64,
+    property_id: PROPERTYID,
+    sender: Ref<IUIAutomationElement>,
+) {
+    let Some(snapshot) = snapshot_sender(sender) else {
+        eprintln!(
+            "PROPERTY_CHANGED/UIA_{} #{sequence} | sender=NULL",
+            property_id.0
+        );
+        return;
+    };
+
+    let property_name = match property_id {
+        VALUE_VALUE_PROPERTY => "ValueValue",
+        SELECTION_ITEM_IS_SELECTED_PROPERTY => "SelectionItemIsSelected",
+        TOGGLE_TOGGLE_STATE_PROPERTY => "ToggleToggleState",
+        _ => "Unknown",
+    };
+
+    println!(
+        "PROPERTY_CHANGED/UIA_{}[{property_name}] #{sequence} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
+        property_id.0,
+        snapshot.process_id,
+        snapshot.framework,
+        snapshot.class_name,
+        snapshot.role,
+        snapshot.name,
+        snapshot.automation_id
+    );
 }
 
 #[implement(IUIAutomationFocusChangedEventHandler)]
@@ -190,10 +237,27 @@ impl IUIAutomationEventHandler_Impl for AutomationSink_Impl {
     }
 }
 
+#[implement(IUIAutomationPropertyChangedEventHandler)]
+struct PropertyChangedSink;
+
+impl IUIAutomationPropertyChangedEventHandler_Impl for PropertyChangedSink_Impl {
+    fn HandlePropertyChangedEvent(
+        &self,
+        sender: Ref<IUIAutomationElement>,
+        propertyid: PROPERTYID,
+        _newvalue: &VARIANT,
+    ) -> Result<()> {
+        let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        print_property_sender(sequence, propertyid, sender);
+        Ok(())
+    }
+}
+
 unsafe fn run_modern(
     seconds: u64,
     focus_handler: &IUIAutomationFocusChangedEventHandler,
     automation_handler: &IUIAutomationEventHandler,
+    property_handler: &IUIAutomationPropertyChangedEventHandler,
 ) -> Result<()> {
     let automation6: IUIAutomation6 =
         unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)? };
@@ -223,6 +287,16 @@ unsafe fn run_modern(
             .ok()?;
 
         automation6.AddEventHandlerGroup(&root, &group).ok()?;
+
+        automation
+            .AddPropertyChangedEventHandlerNativeArray(
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                property_handler,
+                &PROPERTY_CHANGE_PROPERTIES,
+            )
+            .ok()?;
     }
 
     if let Err(error) = unsafe {
@@ -230,24 +304,32 @@ unsafe fn run_modern(
             .AddFocusChangedEventHandler(cache.as_ref(), focus_handler)
             .ok()
     } {
+        let _ = unsafe {
+            automation
+                .RemovePropertyChangedEventHandler(&root, property_handler)
+                .ok()
+        };
         let _ = unsafe { automation6.RemoveEventHandlerGroup(&root, &group).ok() };
         return Err(error);
     }
 
     println!("UIA_ACTIVATION = CUIAutomation8");
     println!("UIA_INTERFACE = IUIAutomation6");
-    println!("EVENT_REGISTRATION = HANDLER_GROUP");
+    println!("EVENT_REGISTRATION = HANDLER_GROUP_PLUS_PROPERTY_CHANGED");
     println!("UIA_NATIVE_EVENTS_INIT = PASS");
     println!("MONITOR_SECONDS = {seconds}");
-    println!("TEST = focus + text input + caret/selection");
+    println!("TEST = focus + text input + caret/selection + value/state changes");
 
     thread::sleep(Duration::from_secs(seconds));
 
     unsafe {
-        automation6.RemoveEventHandlerGroup(&root, &group).ok()?;
         automation
             .RemoveFocusChangedEventHandler(focus_handler)
             .ok()?;
+        automation
+            .RemovePropertyChangedEventHandler(&root, property_handler)
+            .ok()?;
+        automation6.RemoveEventHandlerGroup(&root, &group).ok()?;
     }
 
     thread::sleep(Duration::from_millis(300));
@@ -278,6 +360,7 @@ unsafe fn run_compat(
     seconds: u64,
     focus_handler: &IUIAutomationFocusChangedEventHandler,
     automation_handler: &IUIAutomationEventHandler,
+    property_handler: &IUIAutomationPropertyChangedEventHandler,
 ) -> Result<()> {
     let automation = unsafe { create_compat_automation()? };
     let root = unsafe { automation.GetRootElement()? };
@@ -316,7 +399,13 @@ unsafe fn run_compat(
 
     if let Err(error) = unsafe {
         automation
-            .AddFocusChangedEventHandler(cache.as_ref(), focus_handler)
+            .AddPropertyChangedEventHandlerNativeArray(
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                property_handler,
+                &PROPERTY_CHANGE_PROPERTIES,
+            )
             .ok()
     } {
         let _ = unsafe {
@@ -336,23 +425,53 @@ unsafe fn run_compat(
         return Err(error);
     }
 
+    if let Err(error) = unsafe {
+        automation
+            .AddFocusChangedEventHandler(cache.as_ref(), focus_handler)
+            .ok()
+    } {
+        let _ = unsafe {
+            automation
+                .RemovePropertyChangedEventHandler(&root, property_handler)
+                .ok()
+        };
+        let _ = unsafe {
+            automation
+                .RemoveAutomationEventHandler(
+                    TEXT_SELECTION_CHANGED_EVENT,
+                    &root,
+                    automation_handler,
+                )
+                .ok()
+        };
+        let _ = unsafe {
+            automation
+                .RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, automation_handler)
+                .ok()
+        };
+        return Err(error);
+    }
+
     println!("UIA_INTERFACE = IUIAutomation");
-    println!("EVENT_REGISTRATION = INDIVIDUAL_COMPAT");
+    println!("EVENT_REGISTRATION = INDIVIDUAL_COMPAT_PLUS_PROPERTY_CHANGED");
     println!("UIA_NATIVE_EVENTS_INIT = PASS");
     println!("MONITOR_SECONDS = {seconds}");
-    println!("TEST = focus + text input + caret/selection");
+    println!("TEST = focus + text input + caret/selection + value/state changes");
 
     thread::sleep(Duration::from_secs(seconds));
 
     unsafe {
         automation
+            .RemoveFocusChangedEventHandler(focus_handler)
+            .ok()?;
+        automation
+            .RemovePropertyChangedEventHandler(&root, property_handler)
+            .ok()?;
+        automation
             .RemoveAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, automation_handler)
             .ok()?;
         automation
             .RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, automation_handler)
-            .ok()?;
-        automation
-            .RemoveFocusChangedEventHandler(focus_handler)
             .ok()?;
     }
 
@@ -369,8 +488,14 @@ pub fn run() -> Result<()> {
 
         let focus_handler: IUIAutomationFocusChangedEventHandler = FocusSink.into();
         let automation_handler: IUIAutomationEventHandler = AutomationSink.into();
+        let property_handler: IUIAutomationPropertyChangedEventHandler = PropertyChangedSink.into();
 
-        match run_modern(seconds, &focus_handler, &automation_handler) {
+        match run_modern(
+            seconds,
+            &focus_handler,
+            &automation_handler,
+            &property_handler,
+        ) {
             Ok(()) => {
                 println!("RUNTIME_MODE = MODERN_IUIAUTOMATION6");
             }
@@ -378,16 +503,22 @@ pub fn run() -> Result<()> {
                 eprintln!("MODERN_UIA6_UNAVAILABLE = {error}");
                 eprintln!("FALLBACK = IUIAutomation individual event registration");
 
-                run_compat(seconds, &focus_handler, &automation_handler)?;
+                run_compat(
+                    seconds,
+                    &focus_handler,
+                    &automation_handler,
+                    &property_handler,
+                )?;
                 println!("RUNTIME_MODE = COMPAT_IUIAUTOMATION");
             }
         }
 
         println!(
-            "COUNTS | focus={} | text_changed={} | text_selection={}",
+            "COUNTS | focus={} | text_changed={} | text_selection={} | property_changed={}",
             FOCUS_COUNT.load(Ordering::Relaxed),
             TEXT_CHANGED_COUNT.load(Ordering::Relaxed),
-            TEXT_SELECTION_COUNT.load(Ordering::Relaxed)
+            TEXT_SELECTION_COUNT.load(Ordering::Relaxed),
+            PROPERTY_CHANGED_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
