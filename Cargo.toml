@@ -22,6 +22,11 @@ features = [
     "Devices_HumanInterfaceDevice",
     "winuser",
     "windef",
+    "Foundation",
+    "Media_Core",
+    "Media_Playback",
+    "Media_SpeechSynthesis",
+    "Storage_Streams",
 ]
 
 [target.'cfg(windows)'.dependencies.windows-core]
