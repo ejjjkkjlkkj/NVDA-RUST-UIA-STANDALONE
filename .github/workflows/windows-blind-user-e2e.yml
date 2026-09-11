@@ -1,0 +1,157 @@
+name: Windows Blind User Keyboard E2E
+
+on:
+  push:
+    branches: [main, automation/blind-user-keyboard-e2e]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "reference/nvda-baseline.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-blind-user-e2e.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "reference/nvda-baseline.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-blind-user-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-blind-user-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  blind-user-keyboard-e2e:
+    name: Keyboard-only blind-user journey
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows screen reader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustc -vV
+          cargo -V
+          cargo build --release --locked
+
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          if (-not (Test-Path $exe)) {
+            throw "Windows release binary missing: $exe"
+          }
+
+      - name: Fetch pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          $baseline = Get-Content 'reference\nvda-baseline.json' -Raw | ConvertFrom-Json
+          if ($baseline.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw "NVDA baseline must point to the official nvaccess/nvda repository"
+          }
+          if ($baseline.sha -notmatch '^[0-9a-f]{40}$') {
+            throw "NVDA baseline SHA is not a full 40-character commit SHA"
+          }
+
+          $nvdaDir = Join-Path $env:RUNNER_TEMP 'nvda-official-reference'
+          if (Test-Path $nvdaDir) {
+            Remove-Item -Recurse -Force $nvdaDir
+          }
+
+          git init $nvdaDir
+          git -C $nvdaDir remote add origin $baseline.repository
+          git -C $nvdaDir fetch --depth 1 origin $baseline.sha
+          $resolved = (git -C $nvdaDir rev-parse FETCH_HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $resolved -ne $baseline.sha) {
+            throw "Official NVDA reference mismatch. expected=$($baseline.sha) resolved=$resolved"
+          }
+          git -C $nvdaDir checkout --detach $resolved
+
+          $commitInfo = git -C $nvdaDir show -s --format='%H%n%cI%n%s' HEAD
+          @(
+            'NVDA_OFFICIAL_REFERENCE = PASS'
+            "repository=$($baseline.repository)"
+            "branch=$($baseline.branch)"
+            "pinned_sha=$($baseline.sha)"
+            'mode=read-only-reference'
+            'runtime_executed=false'
+            '--- official commit ---'
+            $commitInfo
+          ) | Set-Content -Path (Join-Path $evidence 'nvda-official-reference.txt') -Encoding utf8
+
+      - name: Run keyboard-only blind-user scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence'
+
+          & '.\tests\windows\RunBlindUserKeyboardE2E.ps1' `
+            -ScreenReaderExe $exe `
+            -EvidenceDir $evidence
+
+      - name: Publish blind-user summary
+        if: always()
+        shell: pwsh
+        run: |
+          $summaryPath = Join-Path $PWD 'windows-blind-user-evidence\blind-user-summary.json'
+          $referencePath = Join-Path $PWD 'windows-blind-user-evidence\nvda-official-reference.txt'
+          $lines = @('# Windows blind-user keyboard E2E', '')
+
+          if (Test-Path $summaryPath) {
+            $data = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            $lines += '**Scenario: PASS**'
+            $lines += ''
+            $lines += '- Functional input: external keyboard only'
+            $lines += "- Synthesized mouse calls: $($data.synthesizedMouseInputCalls)"
+            $lines += "- Keyboard actions: $($data.externalKeyboardActions)"
+            $lines += "- Controlled fixture UIA events: $($data.fixtureUiaEvents)"
+            $lines += "- Fixture TextChanged events: $($data.fixtureTextChangedEvents)"
+            $lines += "- Fixture TextSelectionChanged events: $($data.fixtureTextSelectionEvents)"
+            $lines += "- Native application UIA events: $($data.nativeAppUiaEvents)"
+            $lines += "- Official NVDA reference SHA: $($data.nvdaOfficialReference.sha)"
+            $lines += '- NVDA runtime executed in this scenario: no'
+            $lines += ''
+            $lines += '## Current gaps before daily screen-reader use'
+            foreach ($limitation in $data.currentLimitations) {
+              $lines += "- $limitation"
+            }
+          } else {
+            $lines += '**Scenario: FAIL or incomplete**'
+          }
+
+          if (Test-Path $referencePath) {
+            $lines += ''
+            $lines += '## Official NVDA reference'
+            $lines += 'Pinned official source retrieval: PASS'
+          }
+
+          $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Upload blind-user evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-blind-user-keyboard-e2e-evidence
+          path: windows-blind-user-evidence/**
+          if-no-files-found: error
+          retention-days: 30
