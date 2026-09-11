@@ -2,7 +2,7 @@ name: Windows Blind User Keyboard E2E
 
 on:
   push:
-    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2, automation/windows-integration]
+    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2, automation/windows-integration, automation/security-hardening]
     paths:
       - "src/**"
       - "tests/windows/**"
@@ -33,10 +33,16 @@ jobs:
     name: Keyboard-only blind-user journey
     runs-on: windows-2025-vs2026
     timeout-minutes: 20
+    env:
+      # Functional evidence needs exact accessible names and spoken text.
+      # Production/default runtime diagnostics remain redacted.
+      NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: "1"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Smoke-test WinForms fixture before Rust build
         shell: pwsh
@@ -46,10 +52,10 @@ jobs:
           & '.\tests\windows\SmokeBlindUserFixture.ps1' -EvidenceDir $evidence
 
       - name: Install latest stable Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-09-03
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
@@ -205,7 +211,7 @@ jobs:
 
       - name: Upload blind-user evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-blind-user-keyboard-e2e-evidence
           path: windows-blind-user-evidence/**
