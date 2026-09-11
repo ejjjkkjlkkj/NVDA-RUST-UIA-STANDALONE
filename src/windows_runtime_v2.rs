@@ -1,5 +1,5 @@
-use std::{env, thread, time::Duration};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{env, thread, time::Duration};
 
 use nvda_rust_uia_standalone::{
     AccessibilityEventKind, ElementSnapshot, format_event_line, parse_monitor_seconds,
@@ -9,6 +9,7 @@ use windows_core::{BSTR, Ref, Result, implement};
 
 const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
 const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
+const TEXT_PATTERN2_PATTERN: PATTERNID = PATTERNID(10024);
 const PROCESS_ID_PROPERTY: PROPERTYID = PROPERTYID(30002);
 const LOCALIZED_CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30004);
 const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
@@ -31,6 +32,10 @@ static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static PROPERTY_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
+static TEXT_PATTERN2_COUNT: AtomicU64 = AtomicU64::new(0);
+static CARET_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_TEXT_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEXT_PATTERN2_PROTECTED_COUNT: AtomicU64 = AtomicU64::new(0);
 
 struct ComApartment;
 impl ComApartment {
@@ -54,6 +59,16 @@ fn bstr(value: Result<BSTR>) -> String {
     value
         .map(|value| value.display().to_string())
         .unwrap_or_else(|_| "<unavailable>".to_string())
+}
+
+fn one_line(value: BSTR) -> String {
+    value
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace('|', "\\|")
 }
 
 fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
@@ -174,7 +189,11 @@ fn speak_focus(observation: &Observation) {
     } else {
         let name = observation.snapshot.name.trim();
         let role = observation.snapshot.role.trim();
-        if !name.is_empty() && name != "<unavailable>" && !role.is_empty() && role != "<unavailable>" {
+        if !name.is_empty()
+            && name != "<unavailable>"
+            && !role.is_empty()
+            && role != "<unavailable>"
+        {
             format!("{name}, {role}")
         } else if !name.is_empty() && name != "<unavailable>" {
             name.to_string()
@@ -190,11 +209,90 @@ fn speak_focus(observation: &Observation) {
     }
 }
 
+fn emit_text_pattern2(sequence: u64, element: &IUIAutomationElement) {
+    unsafe {
+        let process_id = element.CurrentProcessId().unwrap_or_default();
+        let is_password: bool = element
+            .CurrentIsPassword()
+            .map(Into::into)
+            .unwrap_or(false);
+
+        if is_password {
+            TEXT_PATTERN2_PROTECTED_COUNT.fetch_add(1, Ordering::Relaxed);
+            println!(
+                "TEXT_PATTERN2 #{sequence} | PID={process_id} | protected=password | caret_active=<redacted> | selection_ranges=<redacted> | selection_text=<redacted>"
+            );
+            return;
+        }
+
+        let pattern = match element
+            .GetCurrentPatternAs::<IUIAutomationTextPattern2>(TEXT_PATTERN2_PATTERN)
+        {
+            Ok(pattern) => pattern,
+            Err(error) => {
+                println!(
+                    "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=unsupported | error={error}"
+                );
+                return;
+            }
+        };
+
+        let mut active = windows_core::BOOL::default();
+        if let Err(error) = pattern.GetCaretRange(&mut active) {
+            println!(
+                "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=caret-error | error={error}"
+            );
+            return;
+        }
+
+        TEXT_PATTERN2_COUNT.fetch_add(1, Ordering::Relaxed);
+        if active.as_bool() {
+            CARET_ACTIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut selected_parts = Vec::new();
+        let selection_ranges = match pattern.GetSelection() {
+            Ok(ranges) => {
+                let length = ranges.Length().unwrap_or_default().max(0);
+                for index in 0..length.min(8) {
+                    let Ok(range) = ranges.GetElement(index) else {
+                        continue;
+                    };
+                    let Ok(text) = range.GetText(512) else {
+                        continue;
+                    };
+                    let text = one_line(text);
+                    if !text.is_empty() {
+                        selected_parts.push(text);
+                    }
+                }
+                length
+            }
+            Err(_) => -1,
+        };
+
+        let selection_text = if selected_parts.is_empty() {
+            "<none>".to_string()
+        } else {
+            SELECTION_TEXT_COUNT.fetch_add(1, Ordering::Relaxed);
+            selected_parts.join(" || ")
+        };
+
+        println!(
+            "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_text}",
+            active.as_bool()
+        );
+    }
+}
+
 fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
     let Some(observation) = observe(sender) else {
         return;
     };
-    println!("{}", format_event_line(kind, sequence, &observation.snapshot));
+    println!(
+        "{}",
+        format_event_line(kind, sequence, &observation.snapshot)
+    );
     if kind == AccessibilityEventKind::Focus {
         speak_focus(&observation);
     }
@@ -230,12 +328,19 @@ impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
 #[implement(IUIAutomationEventHandler)]
 struct EventSink;
 impl IUIAutomationEventHandler_Impl for EventSink_Impl {
-    fn HandleAutomationEvent(&self, sender: Ref<IUIAutomationElement>, eventid: EVENTID) -> Result<()> {
+    fn HandleAutomationEvent(
+        &self,
+        sender: Ref<IUIAutomationElement>,
+        eventid: EVENTID,
+    ) -> Result<()> {
         if eventid == TEXT_CHANGED_EVENT {
             let n = TEXT_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             emit(AccessibilityEventKind::TextChanged, n, sender);
         } else if eventid == TEXT_SELECTION_CHANGED_EVENT {
             let n = TEXT_SELECTION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(element) = sender.as_ref() {
+                emit_text_pattern2(n, element);
+            }
             emit(AccessibilityEventKind::TextSelectionChanged, n, sender);
         }
         Ok(())
@@ -263,41 +368,69 @@ pub fn run() -> Result<()> {
         let _com = ComApartment::initialize()?;
         crate::windows_speech::initialize()?;
 
-        let automation: IUIAutomation = match CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) {
-            Ok(value) => value,
-            Err(_) => CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?,
-        };
+        let automation: IUIAutomation =
+            match CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) {
+                Ok(value) => value,
+                Err(_) => CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?,
+            };
         let root = automation.GetRootElement()?;
         let cache = cache(&automation);
         let focus: IUIAutomationFocusChangedEventHandler = FocusSink.into();
         let events: IUIAutomationEventHandler = EventSink.into();
         let properties: IUIAutomationPropertyChangedEventHandler = PropertySink.into();
 
-        automation.AddAutomationEventHandler(TEXT_CHANGED_EVENT, &root, TreeScope_Subtree, cache.as_ref(), &events).ok()?;
-        automation.AddAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, TreeScope_Subtree, cache.as_ref(), &events).ok()?;
-        automation.AddPropertyChangedEventHandlerNativeArray(
-            &root,
-            TreeScope_Subtree,
-            cache.as_ref(),
-            &properties,
-            PROPERTY_CHANGE_PROPERTIES.as_ptr(),
-            PROPERTY_CHANGE_PROPERTIES.len() as i32,
-        ).ok()?;
-        automation.AddFocusChangedEventHandler(cache.as_ref(), &focus).ok()?;
+        automation
+            .AddAutomationEventHandler(
+                TEXT_CHANGED_EVENT,
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &events,
+            )
+            .ok()?;
+        automation
+            .AddAutomationEventHandler(
+                TEXT_SELECTION_CHANGED_EVENT,
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &events,
+            )
+            .ok()?;
+        automation
+            .AddPropertyChangedEventHandlerNativeArray(
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &properties,
+                PROPERTY_CHANGE_PROPERTIES.as_ptr(),
+                PROPERTY_CHANGE_PROPERTIES.len() as i32,
+            )
+            .ok()?;
+        automation
+            .AddFocusChangedEventHandler(cache.as_ref(), &focus)
+            .ok()?;
 
         println!("SCREEN_READER_RUNTIME_INIT = PASS");
         println!("UIA_INTERFACE = IUIAutomation");
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
+        println!("TEXT_PATTERN2_CARET_SELECTION = ENABLED");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
 
         thread::sleep(Duration::from_secs(seconds));
 
         automation.RemoveFocusChangedEventHandler(&focus).ok()?;
-        automation.RemovePropertyChangedEventHandler(&root, &properties).ok()?;
-        automation.RemoveAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, &events).ok()?;
-        automation.RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, &events).ok()?;
+        automation
+            .RemovePropertyChangedEventHandler(&root, &properties)
+            .ok()?;
+        automation
+            .RemoveAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, &events)
+            .ok()?;
+        automation
+            .RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, &events)
+            .ok()?;
 
         println!(
             "COUNTS | focus={} | text_changed={} | text_selection={} | property_changed={}",
@@ -305,6 +438,13 @@ pub fn run() -> Result<()> {
             TEXT_CHANGED_COUNT.load(Ordering::Relaxed),
             TEXT_SELECTION_COUNT.load(Ordering::Relaxed),
             PROPERTY_CHANGED_COUNT.load(Ordering::Relaxed)
+        );
+        println!(
+            "TEXT_PATTERN2_COUNTS | pass={} | caret_active={} | selection_text={} | protected={}",
+            TEXT_PATTERN2_COUNT.load(Ordering::Relaxed),
+            CARET_ACTIVE_COUNT.load(Ordering::Relaxed),
+            SELECTION_TEXT_COUNT.load(Ordering::Relaxed),
+            TEXT_PATTERN2_PROTECTED_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
