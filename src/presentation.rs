@@ -24,8 +24,15 @@ fn push_token(tokens: &mut Vec<String>, value: impl Into<String>) {
 }
 
 pub fn focus_utterance(node: &AccessibleNode) -> Option<Utterance> {
-    let mut tokens = Vec::new();
+    if node.has_state(State::Password) {
+        return Some(Utterance {
+            text: "password field".to_string(),
+            priority: SpeechPriority::Focus,
+            interrupt: true,
+        });
+    }
 
+    let mut tokens = Vec::new();
     push_token(&mut tokens, node.name.clone());
 
     if node.role != Role::Unknown {
@@ -34,9 +41,7 @@ pub fn focus_utterance(node: &AccessibleNode) -> Option<Utterance> {
         push_token(&mut tokens, node.native_role.clone());
     }
 
-    if node.has_state(State::Password) {
-        push_token(&mut tokens, "protected");
-    } else if node.role.reports_value_on_focus() {
+    if node.role.reports_value_on_focus() {
         push_token(&mut tokens, node.safe_value());
     }
 
@@ -126,18 +131,19 @@ mod tests {
     }
 
     #[test]
-    fn password_value_is_not_spoken() {
+    fn password_focus_is_generic_and_value_is_not_spoken() {
         let node = AccessibleNode {
             role: Role::EditableText,
-            name: "Password".into(),
+            name: "Account password".into(),
             value: "super-secret".into(),
             states: vec![State::Password],
             ..AccessibleNode::default()
         };
 
-        let utterance = focus_utterance(&node).expect("role still produces speech");
-        assert_eq!(utterance.text, "Password, edit, protected");
+        let utterance = focus_utterance(&node).expect("password utterance");
+        assert_eq!(utterance.text, "password field");
         assert!(!utterance.text.contains("super-secret"));
+        assert!(!utterance.text.contains("Account password"));
     }
 
     #[test]
