@@ -12,6 +12,8 @@ use windows_core::{BSTR, Ref, Result, implement};
 
 const TEXT_SELECTION_CHANGED_EVENT: EVENTID = EVENTID(20014);
 const TEXT_CHANGED_EVENT: EVENTID = EVENTID(20015);
+const VALUE_PATTERN: PATTERNID = PATTERNID(10002);
+const TOGGLE_PATTERN: PATTERNID = PATTERNID(10015);
 const PROCESS_ID_PROPERTY: PROPERTYID = PROPERTYID(30002);
 const LOCALIZED_CONTROL_TYPE_PROPERTY: PROPERTYID = PROPERTYID(30004);
 const NAME_PROPERTY: PROPERTYID = PROPERTYID(30005);
@@ -34,9 +36,11 @@ static FOCUS_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static PROPERTY_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
+static PROPERTY_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
 static LAST_FOCUS_IDENTITY: Mutex<Option<String>> = Mutex::new(None);
+static LAST_POLLED_STATE: Mutex<Option<PolledState>> = Mutex::new(None);
 
 struct ComApartment;
 impl ComApartment {
@@ -54,6 +58,12 @@ impl Drop for ComApartment {
 struct Observation {
     snapshot: ElementSnapshot,
     is_password: bool,
+}
+
+struct PolledState {
+    identity: String,
+    value: Option<String>,
+    toggle: Option<ToggleState>,
 }
 
 fn bstr(value: Result<BSTR>) -> String {
@@ -218,8 +228,8 @@ fn focus_changed(observation: &Observation) -> bool {
     }
 }
 
-fn emit_focus(observation: Observation, source: &str) {
-    if !focus_changed(&observation) {
+fn emit_focus(observation: &Observation, source: &str) {
+    if !focus_changed(observation) {
         return;
     }
 
@@ -235,7 +245,92 @@ fn emit_focus(observation: Observation, source: &str) {
         "FOCUS #{sequence} | Source={source} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
         s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
     );
-    speak_focus(&observation);
+    speak_focus(observation);
+}
+
+fn property_label(property: PROPERTYID) -> &'static str {
+    match property {
+        VALUE_VALUE_PROPERTY => "ValueValue",
+        SELECTION_ITEM_IS_SELECTED_PROPERTY => "SelectionItemIsSelected",
+        TOGGLE_TOGGLE_STATE_PROPERTY => "ToggleToggleState",
+        _ => "Unknown",
+    }
+}
+
+fn emit_property_observation(
+    sequence: u64,
+    property: PROPERTYID,
+    observation: &Observation,
+    source: &str,
+) {
+    let s = &observation.snapshot;
+    let label = property_label(property);
+    println!(
+        "PROPERTY_CHANGED/UIA_{}[{label}] #{sequence} | Source={source} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
+        property.0, s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
+    );
+}
+
+fn poll_control_state(element: &IUIAutomationElement, observation: &Observation) {
+    let identity = focus_identity(observation);
+    let value = if observation.is_password {
+        None
+    } else {
+        unsafe {
+            element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(VALUE_PATTERN)
+                .ok()
+                .and_then(|pattern| pattern.CurrentValue().ok())
+                .map(|value| value.display().to_string())
+        }
+    };
+    let toggle = unsafe {
+        element
+            .GetCurrentPatternAs::<IUIAutomationTogglePattern>(TOGGLE_PATTERN)
+            .ok()
+            .and_then(|pattern| pattern.CurrentToggleState().ok())
+    };
+
+    let Ok(mut previous) = LAST_POLLED_STATE.lock() else {
+        return;
+    };
+
+    let mut value_changed = false;
+    let mut toggle_changed = None;
+    if let Some(old) = previous.as_ref() {
+        if old.identity == identity {
+            value_changed = old.value != value && old.value.is_some() && value.is_some();
+            if old.toggle != toggle && old.toggle.is_some() && toggle.is_some() {
+                toggle_changed = toggle;
+            }
+        }
+    }
+
+    *previous = Some(PolledState {
+        identity,
+        value,
+        toggle,
+    });
+    drop(previous);
+
+    if value_changed {
+        let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+        emit_property_observation(sequence, VALUE_VALUE_PROPERTY, observation, "poll");
+    }
+
+    if let Some(state) = toggle_changed {
+        let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+        emit_property_observation(sequence, TOGGLE_TOGGLE_STATE_PROPERTY, observation, "poll");
+        let phrase = match state {
+            ToggleState_On => "checked",
+            ToggleState_Off => "not checked",
+            ToggleState_Indeterminate => "partially checked",
+            _ => "state changed",
+        };
+        crate::windows_speech::speak(phrase);
+    }
 }
 
 fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
@@ -251,17 +346,7 @@ fn emit_property(sequence: u64, property: PROPERTYID, sender: Ref<IUIAutomationE
         return;
     };
     let observation = observe(element);
-    let label = match property {
-        VALUE_VALUE_PROPERTY => "ValueValue",
-        SELECTION_ITEM_IS_SELECTED_PROPERTY => "SelectionItemIsSelected",
-        TOGGLE_TOGGLE_STATE_PROPERTY => "ToggleToggleState",
-        _ => "Unknown",
-    };
-    let s = observation.snapshot;
-    println!(
-        "PROPERTY_CHANGED/UIA_{}[{label}] #{sequence} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
-        property.0, s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
-    );
+    emit_property_observation(sequence, property, &observation, "event");
 }
 
 #[implement(IUIAutomationFocusChangedEventHandler)]
@@ -269,7 +354,8 @@ struct FocusSink;
 impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
     fn HandleFocusChangedEvent(&self, sender: Ref<IUIAutomationElement>) -> Result<()> {
         if let Some(element) = sender.as_ref() {
-            emit_focus(observe(element), "event");
+            let observation = observe(element);
+            emit_focus(&observation, "event");
         }
         Ok(())
     }
@@ -337,6 +423,7 @@ pub fn run() -> Result<()> {
         println!("UIA_INTERFACE = IUIAutomation");
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_FOCUS_POLL_FALLBACK = ENABLED");
+        println!("UIA_STATE_POLL_FALLBACK = VALUE_TOGGLE");
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
@@ -344,7 +431,9 @@ pub fn run() -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         while Instant::now() < deadline {
             if let Ok(element) = automation.GetFocusedElement() {
-                emit_focus(observe(&element), "poll");
+                let observation = observe(&element);
+                emit_focus(&observation, "poll");
+                poll_control_state(&element, &observation);
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -365,6 +454,10 @@ pub fn run() -> Result<()> {
             "FOCUS_SOURCE_COUNTS | event={} | poll={}",
             FOCUS_EVENT_COUNT.load(Ordering::Relaxed),
             FOCUS_POLL_COUNT.load(Ordering::Relaxed)
+        );
+        println!(
+            "PROPERTY_SOURCE_COUNTS | poll={}",
+            PROPERTY_POLL_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
