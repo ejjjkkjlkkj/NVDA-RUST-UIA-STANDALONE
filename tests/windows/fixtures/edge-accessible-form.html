@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Screen Reader Web Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Accessible web fixture</h1>
+
+    <p>
+      <label for="account">Web account name</label>
+      <input id="account" name="account" type="text" autocomplete="off" autofocus>
+    </p>
+
+    <p>
+      <label>
+        <input id="feature" name="feature" type="checkbox">
+        Web feature enabled
+      </label>
+    </p>
+
+    <p>
+      <label for="mode">Web reading mode</label>
+      <select id="mode" name="mode">
+        <option value="standard">Standard</option>
+        <option value="detailed">Detailed</option>
+      </select>
+    </p>
+
+    <p>
+      <button id="apply" type="button">Web apply changes</button>
+    </p>
+
+    <p>
+      <a id="help" href="#help-target">Web help link</a>
+    </p>
+
+    <p id="status" role="status" aria-live="polite">Ready</p>
+    <p id="help-target">Help target</p>
+  </main>
+
+  <script>
+    document.getElementById('apply').addEventListener('click', () => {
+      const feature = document.getElementById('feature').checked ? 'enabled' : 'disabled';
+      const mode = document.getElementById('mode').selectedOptions[0].text;
+      document.getElementById('status').textContent = `Applied ${mode}, feature ${feature}`;
+    });
+  </script>
+</body>
+</html>
