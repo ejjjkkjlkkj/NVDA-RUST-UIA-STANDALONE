@@ -1,0 +1,86 @@
+name: Windows Speech Coalescing
+
+on:
+  push:
+    branches: [automation/speech-coalescing]
+    paths:
+      - "src/windows_speech.rs"
+      - "src/bin/speech_replace_smoke.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-speech-coalescing.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-speech-coalescing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-wins:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build speech replace smoke binary
+        shell: pwsh
+        run: cargo build --release --locked --bin speech_replace_smoke
+
+      - name: Validate rapid replaceable speech
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $PWD 'speech-replace-smoke.log'
+          & '.\target\release\speech_replace_smoke.exe' 2>&1 | Tee-Object -FilePath $log
+          $text = Get-Content $log -Raw
+
+          foreach ($marker in @(
+            'SPEECH_WORKER = READY',
+            'SPEECH_REPLACE_POLICY = LATEST_WINS',
+            'SPEECH_FLUSH = PASS',
+            'SPEECH_REPLACE_SMOKE = COMPLETE'
+          )) {
+            if (-not $text.Contains($marker)) { throw "Missing marker: $marker" }
+          }
+
+          $counts = [regex]::Match($text, 'SPEECH_COUNTS \| requested=(\d+) \| output=(\d+) \| failed=(\d+)')
+          if (-not $counts.Success) { throw 'Missing SPEECH_COUNTS' }
+          $requested = [int]$counts.Groups[1].Value
+          $output = [int]$counts.Groups[2].Value
+          $failed = [int]$counts.Groups[3].Value
+
+          $queue = [regex]::Match($text, 'SPEECH_QUEUE_COUNTS \| enqueue_failures=(\d+) \| replaced=(\d+)')
+          if (-not $queue.Success) { throw 'Missing SPEECH_QUEUE_COUNTS with replaced count' }
+          $enqueueFailures = [int]$queue.Groups[1].Value
+          $replaced = [int]$queue.Groups[2].Value
+
+          if ($requested -ne 20) { throw "Expected 20 replaceable requests, got $requested" }
+          if ($failed -ne 0 -or $enqueueFailures -ne 0) {
+            throw "Speech coalescing reported failure: failed=$failed enqueue_failures=$enqueueFailures"
+          }
+          if ($output -lt 1) { throw 'Latest replaceable speech was never output' }
+          if ($replaced -lt 1) { throw 'Rapid replaceable requests were not coalesced' }
+          if (($output + $replaced) -ne $requested) {
+            throw "Replace accounting mismatch: requested=$requested output=$output replaced=$replaced"
+          }
+          if ($text -notmatch 'SPEECH_OUTPUT #20 = PASS \| rapid selection 20') {
+            throw 'Final replaceable request did not reach speech output'
+          }
+
+          "SPEECH_COALESCING = PASS | requested=$requested | output=$output | replaced=$replaced | failures=0"
+
+      - name: Upload speech evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-speech-coalescing-evidence
+          path: speech-replace-smoke.log
+          if-no-files-found: warn
+          retention-days: 30
