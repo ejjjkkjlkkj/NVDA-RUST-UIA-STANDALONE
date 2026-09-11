@@ -2,7 +2,7 @@ name: Windows Blind User Keyboard E2E
 
 on:
   push:
-    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2]
+    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2, automation/caret-speech]
     paths:
       - "src/**"
       - "tests/windows/**"
@@ -138,6 +138,17 @@ jobs:
             -NativeProbePath (Join-Path $evidence 'native-app-probe.json') `
             -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
 
+      - name: Assert spoken caret and selection when available
+        if: hashFiles('tests/windows/AssertTextNavigationSpeech.ps1') != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence'
+          & '.\tests\windows\AssertTextNavigationSpeech.ps1' `
+            -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
+            -NativeProbePath (Join-Path $evidence 'native-app-probe.json') `
+            -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+
       - name: Publish blind-user summary
         if: always()
         shell: pwsh
@@ -160,8 +171,15 @@ jobs:
             $lines += "- Physical audio device asserted: $($data.physicalAudioDeviceAsserted)"
             if ($null -ne $data.textPattern2Asserted) {
               $lines += "- TextPattern2 asserted: $($data.textPattern2Asserted)"
+              $lines += "- TextPattern2 scope: $($data.textPattern2Scope)"
               $lines += "- Native active-caret events: $($data.nativeActiveCaretEvents)"
               $lines += "- Native selected-text events: $($data.nativeSelectionTextEvents)"
+            }
+            if ($null -ne $data.textNavigationSpeechAsserted) {
+              $lines += "- Text navigation speech asserted: $($data.textNavigationSpeechAsserted)"
+              $lines += "- Text navigation speech scope: $($data.textNavigationSpeechScope)"
+              $lines += "- Caret-character speech count: $($data.caretCharacterSpeechCount)"
+              $lines += "- Selection speech count: $($data.selectionSpeechCount)"
             }
             $lines += "- Official NVDA reference SHA: $($data.nvdaOfficialReference.sha)"
             $lines += '- NVDA runtime executed in this scenario: no'
