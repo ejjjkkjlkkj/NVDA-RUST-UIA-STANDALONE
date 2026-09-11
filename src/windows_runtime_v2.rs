@@ -58,7 +58,7 @@ fn bstr(value: Result<BSTR>) -> String {
 
 fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
     let result = unsafe {
-        let cache = automation.CreateCacheRequest()?;
+        let cache = automation.CreateCacheRequest().ok()?;
         for property in [
             PROCESS_ID_PROPERTY,
             FRAMEWORK_ID_PROPERTY,
@@ -68,21 +68,17 @@ fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
             AUTOMATION_ID_PROPERTY,
             IS_PASSWORD_PROPERTY,
         ] {
-            cache.AddProperty(property).ok()?;
+            cache.AddProperty(property).ok().ok()?;
         }
-        Ok::<_, windows_core::Error>(cache)
+        Some(cache)
     };
 
-    match result {
-        Ok(cache) => {
-            println!("UIA_EVENT_PROPERTY_CACHE = ENABLED");
-            Some(cache)
-        }
-        Err(error) => {
-            eprintln!("UIA_EVENT_PROPERTY_CACHE = FALLBACK_CURRENT | {error}");
-            None
-        }
+    if result.is_some() {
+        println!("UIA_EVENT_PROPERTY_CACHE = ENABLED");
+    } else {
+        eprintln!("UIA_EVENT_PROPERTY_CACHE = FALLBACK_CURRENT");
     }
+    result
 }
 
 fn observe(sender: Ref<IUIAutomationElement>) -> Option<Observation> {
