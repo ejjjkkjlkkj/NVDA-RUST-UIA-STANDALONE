@@ -1,5 +1,9 @@
-use std::sync::{Mutex, OnceLock};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Mutex, OnceLock},
+    thread,
+    time::{Duration, Instant},
+};
 
 use windows::Media::{
     Core::MediaSource,
@@ -58,10 +62,20 @@ pub fn speak(text: &str) {
 
     let result = (|| -> Result<()> {
         let request = HSTRING::from(text);
-        let stream = engine
-            .synthesizer
-            .SynthesizeTextToStreamAsync(&request)?
-            .get()?;
+        let operation = engine.synthesizer.SynthesizeTextToStreamAsync(&request)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        let stream = loop {
+            match operation.GetResults() {
+                Ok(stream) => break stream,
+                Err(error) if Instant::now() < deadline => {
+                    let _ = error;
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+
         let content_type = stream.ContentType()?;
         let source = MediaSource::CreateFromStream(&stream, &content_type)?;
         engine.player.SetSource(&source)?;
