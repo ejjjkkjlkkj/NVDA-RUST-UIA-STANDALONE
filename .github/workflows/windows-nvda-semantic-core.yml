@@ -1,0 +1,152 @@
+name: Windows NVDA-Referenced Semantic Core
+
+on:
+  push:
+    branches: [automation/nvda-semantic-core]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "reference/**"
+      - "docs/NVDA_*.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-nvda-semantic-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-nvda-semantic-core-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  semantic-core:
+    name: Semantic core + blind-user regression
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: nvda-semantic-core-windows-x64
+          cache-on-failure: true
+
+      - name: Quality gates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked --no-deps -- -D warnings
+
+      - name: Build release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release --locked
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          if (-not (Test-Path $exe)) { throw "Release executable missing: $exe" }
+
+      - name: Verify pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reference = Get-Content 'reference\nvda-official-20260911.json' -Raw | ConvertFrom-Json
+          if ($reference.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw 'Reference repository is not official nvaccess/nvda'
+          }
+          if ($reference.commit -notmatch '^[0-9a-f]{40}$') {
+            throw 'Reference commit must be a full SHA'
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'nvda-official-semantic-reference'
+          git init $dir
+          git -C $dir remote add origin $reference.repository
+          git -C $dir fetch --depth 1 origin $reference.commit
+          $resolved = (git -C $dir rev-parse FETCH_HEAD).Trim()
+          if ($resolved -ne $reference.commit) {
+            throw "Official NVDA reference mismatch: expected=$($reference.commit) actual=$resolved"
+          }
+          New-Item -ItemType Directory -Force -Path 'semantic-evidence' | Out-Null
+          @(
+            'NVDA_OFFICIAL_REFERENCE = PASS',
+            "repository=$($reference.repository)",
+            "commit=$resolved",
+            'mode=read-only-reference',
+            'runtime_executed=false'
+          ) | Set-Content 'semantic-evidence\nvda-reference.txt' -Encoding utf8
+
+      - name: Diagnostic redaction regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          & '.\tests\windows\RunDiagnosticRedactionE2E.ps1' `
+            -ScreenReaderExe $exe `
+            -EvidenceDir (Join-Path $PWD 'semantic-evidence\diagnostic-redaction')
+
+      - name: Keyboard-only blind-user scenario
+        shell: pwsh
+        env:
+          NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          $evidence = Join-Path $PWD 'semantic-evidence\blind-user'
+          & '.\tests\windows\RunBlindUserKeyboardE2E.ps1' `
+            -ScreenReaderExe $exe `
+            -EvidenceDir $evidence
+          & '.\tests\windows\AssertSpeechEvidence.ps1' `
+            -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
+            -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+          if (Test-Path '.\tests\windows\AssertTextPattern2Evidence.ps1') {
+            & '.\tests\windows\AssertTextPattern2Evidence.ps1' `
+              -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
+              -NativeProbePath (Join-Path $evidence 'native-app-probe.json') `
+              -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+          }
+          $log = Get-Content (Join-Path $evidence 'screen-reader.stdout.txt') -Raw
+          foreach ($marker in @(
+            'SCREEN_READER_RUNTIME_VERSION = V3_SEMANTIC',
+            'UIA_SEMANTIC_ADAPTER = ENABLED',
+            'SCREEN_READER_SEMANTIC_PIPELINE = UIA_TO_ACCESSIBLE_NODE_TO_PRESENTATION_TO_SPEECH',
+            'SEMANTIC_FOCUS #'
+          )) {
+            if (-not $log.Contains($marker)) { throw "Missing semantic runtime marker: $marker" }
+          }
+          'SEMANTIC_BLIND_USER_E2E = PASS'
+
+      - name: Password privacy regression
+        shell: pwsh
+        env:
+          NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          & '.\tests\windows\RunPasswordPrivacyE2E.ps1' `
+            -ScreenReaderExe $exe `
+            -EvidenceDir (Join-Path $PWD 'semantic-evidence\password-privacy')
+
+      - name: Upload semantic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-nvda-semantic-core-evidence
+          path: semantic-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
