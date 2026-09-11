@@ -76,6 +76,10 @@ pub fn speech_text(value: &str) -> String {
         .join(" ")
 }
 
+// This helper is already covered by tests and is the migration target for
+// plaintext UIA state-table identities. Keep the release binary warning-free
+// while that migration is completed.
+#[allow(dead_code)]
 pub fn identity_key(parts: &[&str]) -> String {
     let state = IDENTITY_HASH_STATE.get_or_init(RandomState::new);
     let mut hasher = state.build_hasher();
