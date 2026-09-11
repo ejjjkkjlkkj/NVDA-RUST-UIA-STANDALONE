@@ -2,7 +2,7 @@ name: Windows Blind User Keyboard E2E
 
 on:
   push:
-    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2]
+    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2, automation/windows-integration]
     paths:
       - "src/**"
       - "tests/windows/**"
@@ -138,11 +138,22 @@ jobs:
             -NativeProbePath (Join-Path $evidence 'native-app-probe.json') `
             -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
 
+      - name: Assert protected password privacy when available
+        if: hashFiles('tests/windows/RunPasswordPrivacyE2E.ps1') != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence\password-privacy'
+          & '.\tests\windows\RunPasswordPrivacyE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
       - name: Publish blind-user summary
         if: always()
         shell: pwsh
         run: |
           $summaryPath = Join-Path $PWD 'windows-blind-user-evidence\blind-user-summary.json'
+          $passwordSummaryPath = Join-Path $PWD 'windows-blind-user-evidence\password-privacy\password-privacy-summary.json'
           $referencePath = Join-Path $PWD 'windows-blind-user-evidence\nvda-official-reference.txt'
           $lines = @('# Windows blind-user keyboard E2E', '')
 
@@ -172,6 +183,16 @@ jobs:
             }
           } else {
             $lines += '**Scenario: FAIL or incomplete**'
+          }
+
+          if (Test-Path $passwordSummaryPath) {
+            $password = Get-Content $passwordSummaryPath -Raw | ConvertFrom-Json
+            $lines += ''
+            $lines += '## Password privacy'
+            $lines += "- Privacy E2E: $($password.pass)"
+            $lines += "- Secret leaks in evidence: $($password.secretLeakCount)"
+            $lines += "- Generic password speech outputs: $($password.genericPasswordSpeechOutputs)"
+            $lines += "- Protected TextPattern2 events: $($password.protectedTextPatternEvents)"
           }
 
           if (Test-Path $referencePath) {
