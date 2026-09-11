@@ -1,0 +1,107 @@
+name: Windows Edge Web Keyboard E2E
+
+on:
+  push:
+    branches: [automation/edge-web-e2e]
+    paths:
+      - "src/**"
+      - "tests/windows/RunEdgeWebKeyboardE2E.ps1"
+      - "tests/windows/fixtures/edge-accessible-form.html"
+      - "reference/nvda-baseline.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-edge-web-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-edge-web-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge-web-keyboard-e2e:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Parse Edge E2E PowerShell harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'tests\windows\RunEdgeWebKeyboardE2E.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "Edge E2E PowerShell parse failed with $($errors.Count) error(s)"
+          }
+          'EDGE_E2E_POWERSHELL_PARSE = PASS'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Fetch pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = Get-Content 'reference\nvda-baseline.json' -Raw | ConvertFrom-Json
+          if ($baseline.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw 'NVDA baseline repository is not official nvaccess/nvda'
+          }
+          $nvdaDir = Join-Path $env:RUNNER_TEMP 'nvda-official-reference'
+          git init $nvdaDir
+          git -C $nvdaDir remote add origin $baseline.repository
+          git -C $nvdaDir fetch --depth 1 origin $baseline.sha
+          $resolved = (git -C $nvdaDir rev-parse FETCH_HEAD).Trim()
+          if ($resolved -ne $baseline.sha) {
+            throw "Official NVDA reference mismatch: expected=$($baseline.sha) resolved=$resolved"
+          }
+          "NVDA_OFFICIAL_REFERENCE = PASS | sha=$resolved"
+
+      - name: Run keyboard-only Edge web scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-edge-web-evidence'
+          & '.\tests\windows\RunEdgeWebKeyboardE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
+      - name: Assert speech queue completed without failures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logPath = Join-Path $PWD 'windows-edge-web-evidence\edge-screen-reader.stdout.txt'
+          $log = Get-Content $logPath -Raw
+          $counts = [regex]::Match($log, 'SPEECH_COUNTS \| requested=(\d+) \| output=(\d+) \| failed=(\d+)')
+          if (-not $counts.Success) { throw 'Missing SPEECH_COUNTS in Edge E2E log' }
+          $requested = [int64]$counts.Groups[1].Value
+          $output = [int64]$counts.Groups[2].Value
+          $failed = [int64]$counts.Groups[3].Value
+          if ($requested -lt 5) { throw "Too few Edge speech requests: $requested" }
+          if ($requested -ne $output) { throw "Edge speech request/output mismatch: $requested/$output" }
+          if ($failed -ne 0) { throw "Edge speech pipeline failures: $failed" }
+          "EDGE_SPEECH_PIPELINE = PASS | requested=$requested | output=$output | failed=$failed"
+
+      - name: Upload Edge evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-edge-web-keyboard-e2e-evidence
+          path: windows-edge-web-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
