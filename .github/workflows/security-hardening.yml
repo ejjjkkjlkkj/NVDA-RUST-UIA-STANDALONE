@@ -56,19 +56,34 @@ jobs:
           echo "WINDOWS_RS_PIN = PASS | sha=$expected"
 
       - name: Reject accidental elevation or UIAccess
-        shell: bash
+        shell: python
         run: |
-          set -euo pipefail
-          matches=$(grep -RniE \
-            --include='*.rs' --include='*.toml' --include='*.xml' --include='*.manifest' \
-            'uiAccess[[:space:]]*=[[:space:]]*["'"']true|requireAdministrator|highestAvailable' \
-            . --exclude-dir=.git || true)
-          if [ -n "$matches" ]; then
-            echo "$matches" >&2
-            echo 'Privilege escalation policy violation' >&2
-            exit 1
-          fi
-          echo 'PRIVILEGE_POLICY = PASS | uiAccess=false | elevation=none'
+          from pathlib import Path
+          import re
+
+          extensions = {'.rs', '.toml', '.xml', '.manifest', '.rc', '.ps1'}
+          rules = {
+              'uiAccess=true': re.compile(r'''uiAccess\s*=\s*["']true["']''', re.I),
+              'requireAdministrator': re.compile(r'\brequireAdministrator\b', re.I),
+              'highestAvailable': re.compile(r'\bhighestAvailable\b', re.I),
+              'PowerShell RunAs': re.compile(r'-Verb\s+["\']?RunAs\b', re.I),
+              'runas.exe': re.compile(r'\brunas(?:\.exe)?\b', re.I),
+          }
+          violations = []
+          for path in Path('.').rglob('*'):
+              if not path.is_file() or path.suffix.lower() not in extensions or '.git' in path.parts:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              for label, pattern in rules.items():
+                  for match in pattern.finditer(text):
+                      line = text.count('\n', 0, match.start()) + 1
+                      violations.append(f'{path}:{line}: {label}')
+          if violations:
+              raise SystemExit('Privilege escalation policy violation:\n' + '\n'.join(violations))
+          print('PRIVILEGE_POLICY = PASS | uiAccess=false | elevation=none')
 
       - name: Verify critical workflow actions are SHA pinned
         shell: python
