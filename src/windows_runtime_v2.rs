@@ -29,6 +29,7 @@ const PROPERTY_CHANGE_PROPERTIES: [PROPERTYID; 3] = [
     SELECTION_ITEM_IS_SELECTED_PROPERTY,
     TOGGLE_TOGGLE_STATE_PROPERTY,
 ];
+const MAX_TRACKED_CONTROL_STATES: usize = 256;
 
 static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
 static FOCUS_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -37,10 +38,11 @@ static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static PROPERTY_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static PROPERTY_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
+static PROPERTY_EVENT_SAMPLE_COUNT: AtomicU64 = AtomicU64::new(0);
 static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
 static LAST_FOCUS_IDENTITY: Mutex<Option<String>> = Mutex::new(None);
-static LAST_POLLED_STATE: Mutex<Option<PolledState>> = Mutex::new(None);
+static POLLED_STATES: Mutex<Vec<PolledState>> = Mutex::new(Vec::new());
 
 struct ComApartment;
 impl ComApartment {
@@ -271,7 +273,11 @@ fn emit_property_observation(
     );
 }
 
-fn poll_control_state(element: &IUIAutomationElement, observation: &Observation) {
+fn sample_control_state(
+    element: &IUIAutomationElement,
+    observation: &Observation,
+    source: &'static str,
+) {
     let identity = focus_identity(observation);
     let value = if observation.is_password {
         None
@@ -291,38 +297,50 @@ fn poll_control_state(element: &IUIAutomationElement, observation: &Observation)
             .and_then(|pattern| pattern.CurrentToggleState().ok())
     };
 
-    let Ok(mut previous) = LAST_POLLED_STATE.lock() else {
+    let Ok(mut states) = POLLED_STATES.lock() else {
         return;
     };
 
     let mut value_changed = false;
     let mut toggle_changed = None;
-    if let Some(old) = previous.as_ref() {
-        if old.identity == identity {
-            value_changed = old.value != value && old.value.is_some() && value.is_some();
-            if old.toggle != toggle && old.toggle.is_some() && toggle.is_some() {
-                toggle_changed = toggle;
-            }
+    if let Some(index) = states.iter().position(|state| state.identity == identity) {
+        let old = &mut states[index];
+        value_changed = old.value != value && old.value.is_some() && value.is_some();
+        if old.toggle != toggle && old.toggle.is_some() && toggle.is_some() {
+            toggle_changed = toggle;
         }
+        old.value = value;
+        old.toggle = toggle;
+    } else {
+        if states.len() >= MAX_TRACKED_CONTROL_STATES {
+            states.remove(0);
+        }
+        states.push(PolledState {
+            identity,
+            value,
+            toggle,
+        });
     }
-
-    *previous = Some(PolledState {
-        identity,
-        value,
-        toggle,
-    });
-    drop(previous);
+    drop(states);
 
     if value_changed {
         let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
-        emit_property_observation(sequence, VALUE_VALUE_PROPERTY, observation, "poll");
+        if source == "poll" {
+            PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            PROPERTY_EVENT_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        emit_property_observation(sequence, VALUE_VALUE_PROPERTY, observation, source);
     }
 
     if let Some(state) = toggle_changed {
         let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
-        emit_property_observation(sequence, TOGGLE_TOGGLE_STATE_PROPERTY, observation, "poll");
+        if source == "poll" {
+            PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            PROPERTY_EVENT_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        emit_property_observation(sequence, TOGGLE_TOGGLE_STATE_PROPERTY, observation, source);
         let phrase = if state == ToggleState_On {
             "checked"
         } else if state == ToggleState_Off {
@@ -341,6 +359,7 @@ fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationEl
         return;
     };
     let observation = observe(element);
+    sample_control_state(element, &observation, "event-sample");
     println!("{}", format_event_line(kind, sequence, &observation.snapshot));
 }
 
@@ -359,6 +378,7 @@ impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
         if let Some(element) = sender.as_ref() {
             let observation = observe(element);
             emit_focus(&observation, "event");
+            sample_control_state(element, &observation, "event-sample");
         }
         Ok(())
     }
@@ -429,7 +449,7 @@ pub fn run() -> Result<()> {
         println!("UIA_INTERFACE = IUIAutomation");
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_FOCUS_POLL_FALLBACK = ENABLED");
-        println!("UIA_STATE_POLL_FALLBACK = VALUE_TOGGLE");
+        println!("UIA_STATE_POLL_FALLBACK = VALUE_TOGGLE_EVENT_SAMPLING");
         crate::windows_textpattern2::print_init_marker();
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("MONITOR_SECONDS = {seconds}");
@@ -440,7 +460,7 @@ pub fn run() -> Result<()> {
             if let Ok(element) = automation.GetFocusedElement() {
                 let observation = observe(&element);
                 emit_focus(&observation, "poll");
-                poll_control_state(&element, &observation);
+                sample_control_state(&element, &observation, "poll");
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -463,8 +483,9 @@ pub fn run() -> Result<()> {
             FOCUS_POLL_COUNT.load(Ordering::Relaxed)
         );
         println!(
-            "PROPERTY_SOURCE_COUNTS | poll={}",
-            PROPERTY_POLL_COUNT.load(Ordering::Relaxed)
+            "PROPERTY_SOURCE_COUNTS | poll={} | event_sample={}",
+            PROPERTY_POLL_COUNT.load(Ordering::Relaxed),
+            PROPERTY_EVENT_SAMPLE_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
