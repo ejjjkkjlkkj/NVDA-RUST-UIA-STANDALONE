@@ -2,6 +2,7 @@ use std::fmt;
 
 pub mod commands;
 pub mod navigation;
+pub mod navigation_security;
 pub mod platform;
 pub mod presentation;
 pub mod semantic;
