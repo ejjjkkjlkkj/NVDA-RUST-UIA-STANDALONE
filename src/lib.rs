@@ -3,6 +3,7 @@ use std::fmt;
 pub mod platform;
 pub mod presentation;
 pub mod semantic;
+pub mod uia_semantic;
 
 pub const DEFAULT_MONITOR_SECONDS: u64 = 15;
 
