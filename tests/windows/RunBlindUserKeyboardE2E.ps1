@@ -216,7 +216,7 @@ try {
     Send-UserKeys -Label 'select-all-document' -Keys '^a'
     Send-UserKeys -Label 'type-document' -Keys 'blind user typed text'
     Send-UserKeys -Label 'tab-to-checkbox' -Keys '{TAB}'
-    Send-UserKeys -Label 'toggle-checkbox' -Keys '{SPACE}'
+    Send-UserKeys -Label 'toggle-checkbox' -Keys ' '
     Send-UserKeys -Label 'tab-to-mode' -Keys '{TAB}'
     Send-UserKeys -Label 'choose-detailed-mode' -Keys '{DOWN}'
     Send-UserKeys -Label 'tab-to-apply' -Keys '{TAB}'
@@ -227,7 +227,10 @@ try {
     Send-UserKeys -Label 'reverse-to-checkbox' -Keys '+{TAB}'
     Send-UserKeys -Label 'reverse-to-editor' -Keys '+{TAB}'
     Send-UserKeys -Label 'move-to-end' -Keys '{END}'
-    Send-UserKeys -Label 'select-last-four-characters' -Keys '+({LEFT 4})'
+    Send-UserKeys -Label 'select-left-1' -Keys '+{LEFT}'
+    Send-UserKeys -Label 'select-left-2' -Keys '+{LEFT}'
+    Send-UserKeys -Label 'select-left-3' -Keys '+{LEFT}'
+    Send-UserKeys -Label 'select-left-4' -Keys '+{LEFT}'
 
     Start-Sleep -Milliseconds 800
 
@@ -348,8 +351,8 @@ $keyboardActions = @(
     Get-Content $controllerLog |
         Where-Object { $_ -match '\|KEYBOARD\|' }
 )
-if ($keyboardActions.Count -lt 13) {
-    throw "Expected at least 13 external keyboard actions, observed $($keyboardActions.Count)"
+if ($keyboardActions.Count -lt 16) {
+    throw "Expected at least 16 external keyboard actions, observed $($keyboardActions.Count)"
 }
 
 $counts = [regex]::Match(
