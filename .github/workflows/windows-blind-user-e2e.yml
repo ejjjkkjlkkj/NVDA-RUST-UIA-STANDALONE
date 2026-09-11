@@ -2,7 +2,7 @@ name: Windows Blind User Keyboard E2E
 
 on:
   push:
-    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2]
+    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2, automation/password-privacy]
     paths:
       - "src/**"
       - "tests/windows/**"
@@ -32,7 +32,7 @@ jobs:
   blind-user-keyboard-e2e:
     name: Keyboard-only blind-user journey
     runs-on: windows-2025-vs2026
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -65,6 +65,16 @@ jobs:
           if (-not (Test-Path $exe)) {
             throw "Windows release binary missing: $exe"
           }
+
+      - name: Run protected password privacy scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence\password-privacy'
+          & '.\tests\windows\RunPasswordPrivacyE2E.ps1' `
+            -ScreenReaderExe $exe `
+            -EvidenceDir $evidence
 
       - name: Fetch pinned official NVDA reference
         shell: pwsh
@@ -143,8 +153,19 @@ jobs:
         shell: pwsh
         run: |
           $summaryPath = Join-Path $PWD 'windows-blind-user-evidence\blind-user-summary.json'
+          $privacyPath = Join-Path $PWD 'windows-blind-user-evidence\password-privacy\password-privacy-summary.json'
           $referencePath = Join-Path $PWD 'windows-blind-user-evidence\nvda-official-reference.txt'
           $lines = @('# Windows blind-user keyboard E2E', '')
+
+          if (Test-Path $privacyPath) {
+            $privacy = Get-Content $privacyPath -Raw | ConvertFrom-Json
+            $lines += '**Password privacy: PASS**'
+            $lines += "- Secret leaks in evidence: $($privacy.secretLeakCount)"
+            $lines += "- Password focus events: $($privacy.passwordFocusEvents)"
+            $lines += "- Generic password speech outputs: $($privacy.genericPasswordSpeechOutputs)"
+            $lines += "- Protected TextPattern2 events: $($privacy.protectedTextPatternEvents)"
+            $lines += ''
+          }
 
           if (Test-Path $summaryPath) {
             $data = Get-Content $summaryPath -Raw | ConvertFrom-Json
@@ -160,6 +181,7 @@ jobs:
             $lines += "- Physical audio device asserted: $($data.physicalAudioDeviceAsserted)"
             if ($null -ne $data.textPattern2Asserted) {
               $lines += "- TextPattern2 asserted: $($data.textPattern2Asserted)"
+              $lines += "- TextPattern2 scope: $($data.textPattern2Scope)"
               $lines += "- Native active-caret events: $($data.nativeActiveCaretEvents)"
               $lines += "- Native selected-text events: $($data.nativeSelectionTextEvents)"
             }
