@@ -1,0 +1,94 @@
+name: Windows Combo Value Speech
+
+on:
+  push:
+    branches: [automation/combo-value-speech]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "reference/nvda-baseline.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-combo-value-speech.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-combo-value-speech-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  combo-value-speech:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Fetch pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = Get-Content 'reference\nvda-baseline.json' -Raw | ConvertFrom-Json
+          if ($baseline.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw 'NVDA baseline repository is not official nvaccess/nvda'
+          }
+          $nvdaDir = Join-Path $env:RUNNER_TEMP 'nvda-official-reference'
+          git init $nvdaDir
+          git -C $nvdaDir remote add origin $baseline.repository
+          git -C $nvdaDir fetch --depth 1 origin $baseline.sha
+          $resolved = (git -C $nvdaDir rev-parse FETCH_HEAD).Trim()
+          if ($resolved -ne $baseline.sha) {
+            throw "Official NVDA reference mismatch: expected=$($baseline.sha) resolved=$resolved"
+          }
+          "NVDA_OFFICIAL_REFERENCE = PASS | sha=$resolved"
+
+      - name: Run keyboard-only blind-user scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-combo-value-speech-evidence'
+          & '.\tests\windows\RunBlindUserKeyboardE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
+      - name: Assert combo-box value is spoken
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-combo-value-speech-evidence'
+          $logPath = Join-Path $evidence 'screen-reader.stdout.txt'
+          $log = Get-Content $logPath -Raw
+
+          if ($log -notmatch 'VALUE_SPEECH #\d+ \| control=combo-box \| value=Detailed') {
+            throw 'Keyboard combo change was not converted to value speech for Detailed'
+          }
+          if ($log -notmatch 'SPEECH_OUTPUT #\d+ = PASS \| Detailed\s*$') {
+            throw 'Detailed combo value was queued but did not reach speech output'
+          }
+
+          & '.\tests\windows\AssertSpeechEvidence.ps1' `
+            -ScreenReaderLog $logPath `
+            -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+
+          'COMBO_VALUE_SPEECH_E2E = PASS | value=Detailed | keyboard_only=true'
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-combo-value-speech-evidence
+          path: windows-combo-value-speech-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
