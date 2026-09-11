@@ -1,0 +1,52 @@
+name: Windows UIA Object Navigation Adapter
+
+on:
+  push:
+    branches: [automation/uia-object-navigation-adapter]
+    paths:
+      - "src/navigation.rs"
+      - "src/windows_object_navigation.rs"
+      - "src/lib.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-uia-object-navigation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-uia-object-navigation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: ControlViewWalker compile + lint
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: uia-object-navigation-adapter
+
+      - name: Validate adapter against pinned windows-rs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all
+          cargo test --lib --locked --target x86_64-pc-windows-msvc
+          cargo clippy --lib --locked --target x86_64-pc-windows-msvc --no-deps -- -D warnings
+          cargo check --locked --target x86_64-pc-windows-msvc
+          'UIA_CONTROL_VIEW_WALKER_ADAPTER = PASS'
