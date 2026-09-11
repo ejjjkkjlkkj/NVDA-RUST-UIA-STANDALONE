@@ -1,4 +1,4 @@
-use nvda_rust_uia_standalone::navigation::NavigationDirection;
+use crate::navigation::NavigationDirection;
 use windows::Win32::{IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker};
 use windows_core::Result;
 
