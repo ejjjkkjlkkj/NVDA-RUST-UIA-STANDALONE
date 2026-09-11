@@ -69,7 +69,10 @@ fn render(engine: &SpeechEngine, sequence: u64, text: &str) {
     match result {
         Ok(()) => {
             SPEECH_OUTPUT_COUNT.fetch_add(1, Ordering::Relaxed);
-            println!("SPEECH_OUTPUT #{sequence} = PASS | {text}");
+            println!(
+                "SPEECH_OUTPUT #{sequence} = PASS | {}",
+                crate::windows_diagnostics::text(text)
+            );
         }
         Err(error) => {
             SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -133,6 +136,7 @@ pub fn initialize() -> Result<()> {
 
     println!("SPEECH_OUTPUT_INIT = PASS");
     println!("SPEECH_DISPATCH = ASYNC_WORKER");
+    crate::windows_diagnostics::print_policy_marker();
     Ok(())
 }
 
@@ -143,7 +147,10 @@ pub fn speak(text: &str) {
     }
 
     let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    println!("SPEECH_REQUEST #{sequence} | {text}");
+    println!(
+        "SPEECH_REQUEST #{sequence} | {}",
+        crate::windows_diagnostics::text(text)
+    );
 
     let Some(dispatcher) = DISPATCHER.get() else {
         SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
