@@ -274,9 +274,12 @@ try {
         throw "Fixture exited with code $($fixture.ExitCode)"
     }
 
-    if (-not $reader.WaitForExit(35000)) {
+    # The runtime monitor ends after 30 seconds, then the async speech worker
+    # drains queued synthesis before process exit. Hosted runners can need more
+    # than the previous 35-second harness limit even when the runtime is healthy.
+    if (-not $reader.WaitForExit(70000)) {
         Stop-Process -Id $reader.Id -Force -ErrorAction SilentlyContinue
-        throw 'Screen reader monitor did not exit in time'
+        throw 'Screen reader monitor did not exit after async speech flush window'
     }
     if ($reader.ExitCode -ne 0) {
         throw "Screen reader monitor exited with code $($reader.ExitCode)"
