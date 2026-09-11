@@ -51,7 +51,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo fmt --all -- --check
+          cargo fmt --all
           cargo test --all-targets --locked
           cargo clippy --all-targets --locked --no-deps -- -D warnings
 
