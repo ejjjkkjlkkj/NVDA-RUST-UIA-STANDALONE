@@ -1,5 +1,8 @@
-use std::{env, thread, time::Duration};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{env, thread, time::{Duration, Instant}};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use nvda_rust_uia_standalone::{
     AccessibilityEventKind, ElementSnapshot, format_event_line, parse_monitor_seconds,
@@ -26,11 +29,14 @@ const PROPERTY_CHANGE_PROPERTIES: [PROPERTYID; 3] = [
 ];
 
 static FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
+static FOCUS_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static FOCUS_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_SELECTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static PROPERTY_CHANGED_COUNT: AtomicU64 = AtomicU64::new(0);
 static CACHE_FULL_HIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 static CACHE_FALLBACK_PROPERTIES: AtomicU64 = AtomicU64::new(0);
+static LAST_FOCUS_IDENTITY: Mutex<Option<String>> = Mutex::new(None);
 
 struct ComApartment;
 impl ComApartment {
@@ -81,8 +87,7 @@ fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
     result
 }
 
-fn observe(sender: Ref<IUIAutomationElement>) -> Option<Observation> {
-    let element = sender.as_ref()?;
+fn observe(element: &IUIAutomationElement) -> Observation {
     unsafe {
         let mut fallback = 0_u64;
         macro_rules! cached_or_current {
@@ -154,7 +159,7 @@ fn observe(sender: Ref<IUIAutomationElement>) -> Option<Observation> {
             CACHE_FALLBACK_PROPERTIES.fetch_add(fallback, Ordering::Relaxed);
         }
 
-        Some(Observation {
+        Observation {
             snapshot: ElementSnapshot {
                 process_id,
                 framework,
@@ -164,7 +169,7 @@ fn observe(sender: Ref<IUIAutomationElement>) -> Option<Observation> {
                 automation_id,
             },
             is_password,
-        })
+        }
     }
 }
 
@@ -190,20 +195,62 @@ fn speak_focus(observation: &Observation) {
     }
 }
 
-fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
-    let Some(observation) = observe(sender) else {
-        return;
-    };
-    println!("{}", format_event_line(kind, sequence, &observation.snapshot));
-    if kind == AccessibilityEventKind::Focus {
-        speak_focus(&observation);
+fn focus_identity(observation: &Observation) -> String {
+    let s = &observation.snapshot;
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
+    )
+}
+
+fn focus_changed(observation: &Observation) -> bool {
+    let identity = focus_identity(observation);
+    match LAST_FOCUS_IDENTITY.lock() {
+        Ok(mut previous) => {
+            if previous.as_deref() == Some(identity.as_str()) {
+                false
+            } else {
+                *previous = Some(identity);
+                true
+            }
+        }
+        Err(_) => true,
     }
 }
 
-fn emit_property(sequence: u64, property: PROPERTYID, sender: Ref<IUIAutomationElement>) {
-    let Some(observation) = observe(sender) else {
+fn emit_focus(observation: Observation, source: &str) {
+    if !focus_changed(&observation) {
+        return;
+    }
+
+    let sequence = FOCUS_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if source == "event" {
+        FOCUS_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        FOCUS_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    let s = &observation.snapshot;
+    println!(
+        "FOCUS #{sequence} | Source={source} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
+        s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
+    );
+    speak_focus(&observation);
+}
+
+fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationElement>) {
+    let Some(element) = sender.as_ref() else {
         return;
     };
+    let observation = observe(element);
+    println!("{}", format_event_line(kind, sequence, &observation.snapshot));
+}
+
+fn emit_property(sequence: u64, property: PROPERTYID, sender: Ref<IUIAutomationElement>) {
+    let Some(element) = sender.as_ref() else {
+        return;
+    };
+    let observation = observe(element);
     let label = match property {
         VALUE_VALUE_PROPERTY => "ValueValue",
         SELECTION_ITEM_IS_SELECTED_PROPERTY => "SelectionItemIsSelected",
@@ -221,8 +268,9 @@ fn emit_property(sequence: u64, property: PROPERTYID, sender: Ref<IUIAutomationE
 struct FocusSink;
 impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
     fn HandleFocusChangedEvent(&self, sender: Ref<IUIAutomationElement>) -> Result<()> {
-        let n = FOCUS_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        emit(AccessibilityEventKind::Focus, n, sender);
+        if let Some(element) = sender.as_ref() {
+            emit_focus(observe(element), "event");
+        }
         Ok(())
     }
 }
@@ -288,11 +336,18 @@ pub fn run() -> Result<()> {
         println!("SCREEN_READER_RUNTIME_INIT = PASS");
         println!("UIA_INTERFACE = IUIAutomation");
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
+        println!("UIA_FOCUS_POLL_FALLBACK = ENABLED");
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
 
-        thread::sleep(Duration::from_secs(seconds));
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while Instant::now() < deadline {
+            if let Ok(element) = automation.GetFocusedElement() {
+                emit_focus(observe(&element), "poll");
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
 
         automation.RemoveFocusChangedEventHandler(&focus).ok()?;
         automation.RemovePropertyChangedEventHandler(&root, &properties).ok()?;
@@ -305,6 +360,11 @@ pub fn run() -> Result<()> {
             TEXT_CHANGED_COUNT.load(Ordering::Relaxed),
             TEXT_SELECTION_COUNT.load(Ordering::Relaxed),
             PROPERTY_CHANGED_COUNT.load(Ordering::Relaxed)
+        );
+        println!(
+            "FOCUS_SOURCE_COUNTS | event={} | poll={}",
+            FOCUS_EVENT_COUNT.load(Ordering::Relaxed),
+            FOCUS_POLL_COUNT.load(Ordering::Relaxed)
         );
         println!(
             "UIA_EVENT_CACHE_COUNTS | full_hit_events={} | fallback_properties={}",
