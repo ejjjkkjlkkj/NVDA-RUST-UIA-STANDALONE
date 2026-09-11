@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/nvaccess/nvda.git",
+  "branch": "master",
+  "sha": "c43cf6c1b0518326bd9ff0ed4712474feeb6131c",
+  "capturedAtUtc": "2026-09-11T08:15:49Z",
+  "mode": "read-only-reference",
+  "purpose": "Pinned official NVDA baseline for reproducible technical and functional comparison without making NVDA the code base of this project.",
+  "comparisonScopes": [
+    "keyboard navigation",
+    "focus reporting",
+    "text change reporting",
+    "caret and selection",
+    "control roles and names",
+    "speech behavior",
+    "braille behavior",
+    "web and document navigation",
+    "configuration",
+    "packaging",
+    "runtime tests"
+  ]
+}
