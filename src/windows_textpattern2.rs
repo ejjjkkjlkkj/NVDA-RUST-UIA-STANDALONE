@@ -1,27 +1,142 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use windows::Win32::*;
-use windows_core::BSTR;
 
 const TEXT_PATTERN2_PATTERN: PATTERNID = PATTERNID(10024);
+const MAX_SELECTION_STATES: usize = 256;
+const MAX_SELECTION_SPEECH_CHARS: usize = 200;
 
 static TEXT_PATTERN2_COUNT: AtomicU64 = AtomicU64::new(0);
 static CARET_ACTIVE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SELECTION_TEXT_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEXT_PATTERN2_PROTECTED_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_SPEECH_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_SELECTED_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_UNSELECTED_COUNT: AtomicU64 = AtomicU64::new(0);
+static SELECTION_STATES: Mutex<Vec<SelectionState>> = Mutex::new(Vec::new());
 
-fn one_line(value: BSTR) -> String {
+struct SelectionState {
+    identity: String,
+    text: String,
+}
+
+fn one_line(value: &str) -> String {
     value
-        .display()
-        .to_string()
         .replace('\\', "\\\\")
         .replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('|', "\\|")
 }
 
+fn element_identity(element: &IUIAutomationElement, process_id: i32) -> String {
+    unsafe {
+        let automation_id = element
+            .CurrentAutomationId()
+            .map(|value| value.display().to_string())
+            .unwrap_or_default();
+        let name = element
+            .CurrentName()
+            .map(|value| value.display().to_string())
+            .unwrap_or_default();
+        let class_name = element
+            .CurrentClassName()
+            .map(|value| value.display().to_string())
+            .unwrap_or_default();
+        format!("{process_id}|{class_name}|{automation_id}|{name}")
+    }
+}
+
+fn selection_delta(old: &str, new: &str) -> Option<(&'static str, String)> {
+    if old == new {
+        return None;
+    }
+    if old.is_empty() {
+        return (!new.is_empty()).then(|| ("selected", new.to_string()));
+    }
+    if new.is_empty() {
+        return Some(("unselected", old.to_string()));
+    }
+
+    if new.ends_with(old) {
+        let added = &new[..new.len() - old.len()];
+        if !added.is_empty() {
+            return Some(("selected", added.to_string()));
+        }
+    }
+    if new.starts_with(old) {
+        let added = &new[old.len()..];
+        if !added.is_empty() {
+            return Some(("selected", added.to_string()));
+        }
+    }
+    if old.ends_with(new) {
+        let removed = &old[..old.len() - new.len()];
+        if !removed.is_empty() {
+            return Some(("unselected", removed.to_string()));
+        }
+    }
+    if old.starts_with(new) {
+        let removed = &old[new.len()..];
+        if !removed.is_empty() {
+            return Some(("unselected", removed.to_string()));
+        }
+    }
+
+    Some(("selected", new.to_string()))
+}
+
+fn update_selection_and_speak(identity: String, new_text: String) {
+    let Ok(mut states) = SELECTION_STATES.lock() else {
+        return;
+    };
+
+    let old_text = if let Some(index) = states.iter().position(|state| state.identity == identity) {
+        let previous = states[index].text.clone();
+        states[index].text = new_text.clone();
+        previous
+    } else {
+        if states.len() >= MAX_SELECTION_STATES {
+            states.remove(0);
+        }
+        states.push(SelectionState {
+            identity,
+            text: new_text.clone(),
+        });
+        String::new()
+    };
+    drop(states);
+
+    let Some((action, delta)) = selection_delta(&old_text, &new_text) else {
+        return;
+    };
+    if delta.is_empty() {
+        return;
+    }
+
+    let spoken_delta: String = delta.chars().take(MAX_SELECTION_SPEECH_CHARS).collect();
+    if spoken_delta.is_empty() {
+        return;
+    }
+
+    let sequence = SELECTION_SPEECH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if action == "selected" {
+        SELECTION_SELECTED_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        SELECTION_UNSELECTED_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    println!(
+        "SELECTION_SPEECH #{sequence} | action={action} | text={}",
+        one_line(&spoken_delta)
+    );
+    crate::windows_speech::speak(&format!("{spoken_delta} {action}"));
+}
+
 pub fn print_init_marker() {
     println!("TEXT_PATTERN2_CARET_SELECTION = ENABLED");
+    println!("TEXT_PATTERN2_SELECTION_SPEECH = DELTA_ENABLED");
 }
 
 pub fn inspect_selection(sequence: u64, element: &IUIAutomationElement) {
@@ -76,7 +191,7 @@ pub fn inspect_selection(sequence: u64, element: &IUIAutomationElement) {
                     let Ok(text) = range.GetText(512) else {
                         continue;
                     };
-                    let text = one_line(text);
+                    let text = text.display().to_string();
                     if !text.is_empty() {
                         selected_parts.push(text);
                     }
@@ -86,17 +201,21 @@ pub fn inspect_selection(sequence: u64, element: &IUIAutomationElement) {
             Err(_) => -1,
         };
 
-        let selection_text = if selected_parts.is_empty() {
+        let selected_text = selected_parts.join("\n");
+        let selection_text_log = if selected_text.is_empty() {
             "<none>".to_string()
         } else {
             SELECTION_TEXT_COUNT.fetch_add(1, Ordering::Relaxed);
-            selected_parts.join(" || ")
+            one_line(&selected_text)
         };
 
         println!(
-            "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_text}",
+            "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_text_log}",
             active.as_bool()
         );
+
+        let identity = element_identity(element, process_id);
+        update_selection_and_speak(identity, selected_text);
     }
 }
 
@@ -107,5 +226,11 @@ pub fn print_summary() {
         CARET_ACTIVE_COUNT.load(Ordering::Relaxed),
         SELECTION_TEXT_COUNT.load(Ordering::Relaxed),
         TEXT_PATTERN2_PROTECTED_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "SELECTION_SPEECH_COUNTS | total={} | selected={} | unselected={}",
+        SELECTION_SPEECH_COUNT.load(Ordering::Relaxed),
+        SELECTION_SELECTED_COUNT.load(Ordering::Relaxed),
+        SELECTION_UNSELECTED_COUNT.load(Ordering::Relaxed)
     );
 }
