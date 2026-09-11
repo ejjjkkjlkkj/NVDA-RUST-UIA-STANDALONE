@@ -42,11 +42,23 @@ jobs:
             'SPEECH_OUTPUT_INIT = PASS',
             'SPEECH_DISPATCH = ASYNC_WORKER',
             'SPEECH_FLUSH = PASS',
-            'SPEECH_COUNTS | requested=0 | output=0 | failed=0'
+            'SPEECH_QUEUE_COUNTS | enqueue_failures=0'
           )) {
             if (-not $text.Contains($marker)) { throw "Missing marker: $marker" }
           }
-          'ASYNC_SPEECH_WORKER_SMOKE = PASS'
+
+          $match = [regex]::Match($text, 'SPEECH_COUNTS \| requested=(\d+) \| output=(\d+) \| failed=(\d+)')
+          if (-not $match.Success) { throw 'Missing SPEECH_COUNTS summary' }
+
+          $requested = [int]$match.Groups[1].Value
+          $output = [int]$match.Groups[2].Value
+          $failed = [int]$match.Groups[3].Value
+          if ($failed -ne 0) { throw "Speech failures detected: $failed" }
+          if ($requested -ne $output) {
+            throw "Speech request/output mismatch: requested=$requested output=$output"
+          }
+
+          "ASYNC_SPEECH_WORKER_SMOKE = PASS | requested=$requested | output=$output | failed=$failed"
       - name: Upload log
         if: always()
         uses: actions/upload-artifact@v7
