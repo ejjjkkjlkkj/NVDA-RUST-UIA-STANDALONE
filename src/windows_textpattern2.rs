@@ -53,25 +53,25 @@ fn selection_delta(old: &str, new: &str) -> Option<(&'static str, String)> {
         return Some(("unselected", old.to_string()));
     }
 
-    if let Some(added) = new.strip_suffix(old) {
-        if !added.is_empty() {
-            return Some(("selected", added.to_string()));
-        }
+    if let Some(added) = new.strip_suffix(old)
+        && !added.is_empty()
+    {
+        return Some(("selected", added.to_string()));
     }
-    if let Some(added) = new.strip_prefix(old) {
-        if !added.is_empty() {
-            return Some(("selected", added.to_string()));
-        }
+    if let Some(added) = new.strip_prefix(old)
+        && !added.is_empty()
+    {
+        return Some(("selected", added.to_string()));
     }
-    if let Some(removed) = old.strip_suffix(new) {
-        if !removed.is_empty() {
-            return Some(("unselected", removed.to_string()));
-        }
+    if let Some(removed) = old.strip_suffix(new)
+        && !removed.is_empty()
+    {
+        return Some(("unselected", removed.to_string()));
     }
-    if let Some(removed) = old.strip_prefix(new) {
-        if !removed.is_empty() {
-            return Some(("unselected", removed.to_string()));
-        }
+    if let Some(removed) = old.strip_prefix(new)
+        && !removed.is_empty()
+    {
+        return Some(("unselected", removed.to_string()));
     }
 
     Some(("selected", new.to_string()))
