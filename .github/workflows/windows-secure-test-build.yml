@@ -4,45 +4,32 @@ on:
   push:
     branches:
       - automation/security-hardening
-    paths:
-      - "src/**"
-      - "tests/windows/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "SECURITY.md"
-      - ".github/workflows/windows-secure-test-build.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: windows-secure-test-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-test-package:
-    name: Build, security test, package Windows x64
+  package:
+    name: Windows x64 secure test package
     runs-on: windows-2025-vs2026
     timeout-minutes: 30
-
     steps:
-      - name: Checkout immutable action
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
-      - name: Install pinned Rust toolchain action
+      - name: Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: rustfmt, clippy
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Cargo
+      - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: secure-test-windows-x64
@@ -55,7 +42,7 @@ jobs:
           cargo test --all-targets --locked
           cargo clippy --all-targets --locked --no-deps -- -D warnings
 
-      - name: Build optimized Windows x64 executable
+      - name: Build release x64
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -65,23 +52,21 @@ jobs:
           $exe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
           if (-not (Test-Path $exe)) { throw "Release executable missing: $exe" }
 
-      - name: Assert PE x64 exploit mitigations
+      - name: Check PE mitigations
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
-          $dumpbin = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } |
-            Select-Object -First 1
+          $dumpbin = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } | Select-Object -First 1
           if (-not $dumpbin) { throw 'dumpbin.exe x64 not found' }
           $headers = & $dumpbin.FullName /headers $exe | Out-String
           if ($headers -notmatch '8664 machine \(x64\)') { throw 'PE is not x64' }
-          foreach ($flag in @('High Entropy Virtual Addresses', 'Dynamic base', 'NX compatible')) {
-            if ($headers -notmatch [regex]::Escape($flag)) { throw "Missing PE mitigation: $flag" }
-          }
-          'PE_SECURITY = PASS | x64=true | high_entropy_va=true | aslr=true | nx=true'
+          if ($headers -notmatch 'High Entropy Virtual Addresses') { throw 'HIGH_ENTROPY_VA missing' }
+          if ($headers -notmatch 'Dynamic base') { throw 'ASLR missing' }
+          if ($headers -notmatch 'NX compatible') { throw 'NX_COMPAT missing' }
+          Write-Host 'PE_SECURITY = PASS'
 
-      - name: Assert privacy-first diagnostics
+      - name: Check diagnostic redaction
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -89,7 +74,7 @@ jobs:
           $evidence = Join-Path $PWD 'secure-test-evidence\diagnostic-redaction'
           & '.\tests\windows\RunDiagnosticRedactionE2E.ps1' -ScreenReaderExe $exe -EvidenceDir $evidence
 
-      - name: Assert password privacy
+      - name: Check password privacy
         shell: pwsh
         env:
           NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: '1'
@@ -99,69 +84,47 @@ jobs:
           $evidence = Join-Path $PWD 'secure-test-evidence\password-privacy'
           & '.\tests\windows\RunPasswordPrivacyE2E.ps1' -ScreenReaderExe $exe -EvidenceDir $evidence
 
-      - name: Stage test package
+      - name: Stage package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $dist = Join-Path $PWD 'dist-secure-test'
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          $exe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
-          Copy-Item $exe (Join-Path $dist 'nvda-rust-uia-standalone.exe')
-
-          $hash = (Get-FileHash (Join-Path $dist 'nvda-rust-uia-standalone.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceExe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
+          $targetExe = Join-Path $dist 'nvda-rust-uia-standalone.exe'
+          Copy-Item $sourceExe $targetExe
+          $hash = (Get-FileHash $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  nvda-rust-uia-standalone.exe" | Set-Content (Join-Path $dist 'nvda-rust-uia-standalone.exe.sha256') -Encoding ascii
-
           @(
-            'NVDA Rust UIA Standalone - Secure test build'
-            "Commit: $env:GITHUB_SHA"
-            "Built UTC: $([DateTime]::UtcNow.ToString('o'))"
-            'Target: x86_64-pc-windows-msvc'
-            "rustc: $(rustc --version)"
-            "cargo: $(cargo --version)"
-            'Privilege: asInvoker / no administrator requirement'
-            'UIAccess: disabled'
-            'Diagnostics: text redacted by default'
-            'Password content: always redacted'
-            'Authenticode: UNSIGNED DEVELOPMENT BUILD'
+            'NVDA Rust UIA Standalone - Secure test build',
+            "Commit: $env:GITHUB_SHA",
+            'Target: x86_64-pc-windows-msvc',
+            "rustc: $(rustc --version)",
+            "cargo: $(cargo --version)",
+            'Privilege: asInvoker; no administrator requirement',
+            'UIAccess: disabled',
+            'Diagnostics: text and text length redacted by default',
+            'Password content: always redacted',
+            'Authenticode: UNSIGNED DEVELOPMENT BUILD',
             "SHA256: $hash"
           ) | Set-Content (Join-Path $dist 'BUILD-INFO.txt') -Encoding utf8
+          @(
+            'NVDA Rust UIA Standalone - build de test Windows x64',
+            '',
+            'Verifiez le fichier .sha256 avant execution.',
+            'Aucun droit administrateur n est necessaire.',
+            'Lancez START-5-MINUTES.cmd pour le test principal.',
+            'Testez au clavier dans Bloc-notes, Parametres, Terminal et Microsoft Edge.',
+            'Quittez temporairement JAWS ou NVDA si les voix se chevauchent.',
+            'Les diagnostics masquent le texte utilisateur et sa longueur par defaut.',
+            '',
+            'Build de developpement NON signe Authenticode. Ne desactivez pas SmartScreen ou Defender globalement.'
+          ) | Set-Content (Join-Path $dist 'README-TEST.txt') -Encoding utf8
+          @('@echo off','cd /d "%~dp0"','echo Test 5 minutes - aucun droit administrateur requis','nvda-rust-uia-standalone.exe 300','pause') | Set-Content (Join-Path $dist 'START-5-MINUTES.cmd') -Encoding ascii
+          @('@echo off','cd /d "%~dp0"','echo Test 15 minutes - aucun droit administrateur requis','nvda-rust-uia-standalone.exe 900','pause') | Set-Content (Join-Path $dist 'START-15-MINUTES.cmd') -Encoding ascii
+          Get-ChildItem $dist | Format-Table Name, Length
 
-          @'
-NVDA Rust UIA Standalone - build de test Windows x64
-
-1. Verifiez nvda-rust-uia-standalone.exe.sha256 avant execution.
-2. Aucun droit administrateur n'est necessaire. Ne lancez pas l'EXE en administrateur.
-3. Pour un essai de 5 minutes, lancez START-5-MINUTES.cmd.
-4. Testez au clavier dans Bloc-notes, Parametres, Terminal et Microsoft Edge.
-5. Si JAWS ou NVDA parle en meme temps, quittez temporairement l'autre lecteur d'ecran pour eviter le chevauchement vocal.
-6. Les journaux du binaire masquent le texte utilisateur par defaut.
-
-Limites actuelles : pas encore de mode navigation web complet, braille non valide sur materiel, sortie haut-parleur physique non certifiee par la CI.
-
-SECURITE : build de developpement NON signe Authenticode. Ne desactivez pas SmartScreen/Defender globalement. Comparez le SHA-256 fourni avant le test.
-'@ | Set-Content (Join-Path $dist 'README-TEST.txt') -Encoding utf8
-
-          @'
-@echo off
-cd /d "%~dp0"
-echo NVDA Rust UIA Standalone - test 5 minutes
-echo Aucun droit administrateur requis.
-nvda-rust-uia-standalone.exe 300
-pause
-'@ | Set-Content (Join-Path $dist 'START-5-MINUTES.cmd') -Encoding ascii
-
-          @'
-@echo off
-cd /d "%~dp0"
-echo NVDA Rust UIA Standalone - test 15 minutes
-echo Aucun droit administrateur requis.
-nvda-rust-uia-standalone.exe 900
-pause
-'@ | Set-Content (Join-Path $dist 'START-15-MINUTES.cmd') -Encoding ascii
-
-          Get-ChildItem $dist | Format-Table Name,Length
-
-      - name: Upload verified Windows test archive
+      - name: Upload Windows x64 package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: nvda-rust-uia-secure-test-windows-x64
