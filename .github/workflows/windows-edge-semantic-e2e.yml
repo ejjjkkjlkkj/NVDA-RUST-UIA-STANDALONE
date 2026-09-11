@@ -1,0 +1,127 @@
+name: Windows Edge Semantic Keyboard E2E
+
+on:
+  push:
+    branches: [automation/nvda-edge-semantic]
+    paths:
+      - "src/**"
+      - "tests/windows/RunEdgeWebKeyboardE2E.ps1"
+      - "tests/windows/fixtures/edge-accessible-form.html"
+      - "reference/nvda-official-20260911.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-edge-semantic-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-edge-semantic-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge-semantic-e2e:
+    name: Real Edge keyboard + semantic speech
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 25
+    env:
+      NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Parse Edge harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'tests\windows\RunEdgeWebKeyboardE2E.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "Edge E2E PowerShell parse failed with $($errors.Count) error(s)"
+          }
+          'EDGE_E2E_POWERSHELL_PARSE = PASS'
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: nvda-edge-semantic-windows-x64
+          cache-on-failure: true
+
+      - name: Quality and build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked --no-deps -- -D warnings
+          cargo build --release --locked
+
+      - name: Verify pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reference = Get-Content 'reference\nvda-official-20260911.json' -Raw | ConvertFrom-Json
+          if ($reference.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw 'NVDA reference is not official nvaccess/nvda'
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'nvda-official-edge-reference'
+          git init $dir
+          git -C $dir remote add origin $reference.repository
+          git -C $dir fetch --depth 1 origin $reference.commit
+          $resolved = (git -C $dir rev-parse FETCH_HEAD).Trim()
+          if ($resolved -ne $reference.commit) {
+            throw "NVDA reference mismatch: expected=$($reference.commit) actual=$resolved"
+          }
+          "NVDA_OFFICIAL_REFERENCE = PASS | sha=$resolved"
+
+      - name: Run real Edge keyboard semantic scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-edge-semantic-evidence'
+          & '.\tests\windows\RunEdgeWebKeyboardE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
+      - name: Assert speech queue
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Get-Content 'windows-edge-semantic-evidence\edge-screen-reader.stdout.txt' -Raw
+          $counts = [regex]::Match($log, 'SPEECH_COUNTS \| requested=(\d+) \| output=(\d+) \| failed=(\d+)')
+          if (-not $counts.Success) { throw 'Missing SPEECH_COUNTS' }
+          $requested = [int64]$counts.Groups[1].Value
+          $output = [int64]$counts.Groups[2].Value
+          $failed = [int64]$counts.Groups[3].Value
+          if ($requested -lt 5 -or $requested -ne $output -or $failed -ne 0) {
+            throw "Edge speech queue failed: requested=$requested output=$output failed=$failed"
+          }
+          "EDGE_SPEECH_PIPELINE = PASS | requested=$requested | output=$output | failed=0"
+
+      - name: Upload compact Edge evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-edge-semantic-e2e-evidence
+          path: |
+            windows-edge-semantic-evidence/edge-screen-reader.stdout.txt
+            windows-edge-semantic-evidence/edge-screen-reader.stderr.txt
+            windows-edge-semantic-evidence/edge-keyboard-controller.log
+            windows-edge-semantic-evidence/edge-web-summary.json
+          if-no-files-found: warn
+          retention-days: 30
