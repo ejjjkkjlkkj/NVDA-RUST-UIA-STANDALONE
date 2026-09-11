@@ -118,9 +118,12 @@ try {
         throw 'Password fixture did not close after Alt+F4'
     }
 
-    if (-not $reader.WaitForExit(22000)) {
+    # The async speech worker drains all queued synthesis before the process exits.
+    # Keep the monitor duration short, but allow enough shutdown time for that flush
+    # on slower hosted runners without killing a privacy-correct runtime prematurely.
+    if (-not $reader.WaitForExit(50000)) {
         Stop-Process -Id $reader.Id -Force -ErrorAction SilentlyContinue
-        throw 'Password privacy screen reader monitor did not exit in time'
+        throw 'Password privacy screen reader monitor did not exit after async speech flush window'
     }
     if ($reader.ExitCode -ne 0) {
         throw "Password privacy screen reader exited with code $($reader.ExitCode)"
