@@ -1,0 +1,1 @@
+Reference code is consulted to understand behavior and architecture. Runtime implementation remains original Rust code. Security/privacy guarantees in this project are not weakened to mimic reference diagnostics or deployment behavior.
