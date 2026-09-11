@@ -323,11 +323,14 @@ fn poll_control_state(element: &IUIAutomationElement, observation: &Observation)
         let sequence = PROPERTY_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         PROPERTY_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
         emit_property_observation(sequence, TOGGLE_TOGGLE_STATE_PROPERTY, observation, "poll");
-        let phrase = match state {
-            ToggleState_On => "checked",
-            ToggleState_Off => "not checked",
-            ToggleState_Indeterminate => "partially checked",
-            _ => "state changed",
+        let phrase = if state == ToggleState_On {
+            "checked"
+        } else if state == ToggleState_Off {
+            "not checked"
+        } else if state == ToggleState_Indeterminate {
+            "partially checked"
+        } else {
+            "state changed"
         };
         crate::windows_speech::speak(phrase);
     }
@@ -370,6 +373,9 @@ impl IUIAutomationEventHandler_Impl for EventSink_Impl {
             emit(AccessibilityEventKind::TextChanged, n, sender);
         } else if eventid == TEXT_SELECTION_CHANGED_EVENT {
             let n = TEXT_SELECTION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(element) = sender.as_ref() {
+                crate::windows_textpattern2::inspect_selection(n, element);
+            }
             emit(AccessibilityEventKind::TextSelectionChanged, n, sender);
         }
         Ok(())
@@ -424,6 +430,7 @@ pub fn run() -> Result<()> {
         println!("EVENT_REGISTRATION = FOCUS_TEXT_SELECTION_PROPERTY_CHANGED");
         println!("UIA_FOCUS_POLL_FALLBACK = ENABLED");
         println!("UIA_STATE_POLL_FALLBACK = VALUE_TOGGLE");
+        crate::windows_textpattern2::print_init_marker();
         println!("UIA_NATIVE_EVENTS_INIT = PASS");
         println!("MONITOR_SECONDS = {seconds}");
         println!("SCREEN_READER_PIPELINE = UIA_TO_SPEECH");
@@ -464,6 +471,7 @@ pub fn run() -> Result<()> {
             CACHE_FULL_HIT_EVENTS.load(Ordering::Relaxed),
             CACHE_FALLBACK_PROPERTIES.load(Ordering::Relaxed)
         );
+        crate::windows_textpattern2::print_summary();
         crate::windows_speech::print_summary();
         println!("UIA_NATIVE_EVENTS_RUNTIME = PASS");
     }
