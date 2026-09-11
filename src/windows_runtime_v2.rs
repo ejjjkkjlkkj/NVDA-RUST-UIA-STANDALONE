@@ -1,7 +1,10 @@
-use std::{env, thread, time::{Duration, Instant}};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
+};
+use std::{
+    env, thread,
+    time::{Duration, Instant},
 };
 
 use nvda_rust_uia_standalone::{
@@ -73,6 +76,17 @@ fn bstr(value: Result<BSTR>) -> String {
     value
         .map(|value| value.display().to_string())
         .unwrap_or_else(|_| "<unavailable>".to_string())
+}
+
+fn diagnostic_snapshot(snapshot: &ElementSnapshot) -> ElementSnapshot {
+    ElementSnapshot {
+        process_id: snapshot.process_id,
+        framework: snapshot.framework.clone(),
+        class_name: snapshot.class_name.clone(),
+        role: snapshot.role.clone(),
+        name: crate::windows_diagnostics::text(&snapshot.name),
+        automation_id: crate::windows_diagnostics::text(&snapshot.automation_id),
+    }
 }
 
 fn cache(automation: &IUIAutomation) -> Option<IUIAutomationCacheRequest> {
@@ -192,7 +206,11 @@ fn speak_focus(observation: &Observation) {
     } else {
         let name = observation.snapshot.name.trim();
         let role = observation.snapshot.role.trim();
-        if !name.is_empty() && name != "<unavailable>" && !role.is_empty() && role != "<unavailable>" {
+        if !name.is_empty()
+            && name != "<unavailable>"
+            && !role.is_empty()
+            && role != "<unavailable>"
+        {
             format!("{name}, {role}")
         } else if !name.is_empty() && name != "<unavailable>" {
             name.to_string()
@@ -243,7 +261,7 @@ fn emit_focus(observation: &Observation, source: &str) {
         FOCUS_POLL_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
-    let s = &observation.snapshot;
+    let s = diagnostic_snapshot(&observation.snapshot);
     println!(
         "FOCUS #{sequence} | Source={source} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
         s.process_id, s.framework, s.class_name, s.role, s.name, s.automation_id
@@ -266,7 +284,7 @@ fn emit_property_observation(
     observation: &Observation,
     source: &str,
 ) {
-    let s = &observation.snapshot;
+    let s = diagnostic_snapshot(&observation.snapshot);
     let label = property_label(property);
     println!(
         "PROPERTY_CHANGED/UIA_{}[{label}] #{sequence} | Source={source} | PID={} | Framework={} | Class={} | Role={} | Name={} | AutomationId={}",
@@ -344,7 +362,10 @@ fn sample_control_state(
         if is_combo_box {
             let phrase = value.trim();
             if !phrase.is_empty() {
-                println!("VALUE_SPEECH #{sequence} | control=combo-box | value={phrase}");
+                println!(
+                    "VALUE_SPEECH #{sequence} | control=combo-box | value={}",
+                    crate::windows_diagnostics::text(phrase)
+                );
                 crate::windows_speech::speak(phrase);
             }
         }
@@ -377,7 +398,8 @@ fn emit(kind: AccessibilityEventKind, sequence: u64, sender: Ref<IUIAutomationEl
     };
     let observation = observe(element);
     sample_control_state(element, &observation, "event-sample");
-    println!("{}", format_event_line(kind, sequence, &observation.snapshot));
+    let safe_snapshot = diagnostic_snapshot(&observation.snapshot);
+    println!("{}", format_event_line(kind, sequence, &safe_snapshot));
 }
 
 fn emit_property(sequence: u64, property: PROPERTYID, sender: Ref<IUIAutomationElement>) {
@@ -404,7 +426,11 @@ impl IUIAutomationFocusChangedEventHandler_Impl for FocusSink_Impl {
 #[implement(IUIAutomationEventHandler)]
 struct EventSink;
 impl IUIAutomationEventHandler_Impl for EventSink_Impl {
-    fn HandleAutomationEvent(&self, sender: Ref<IUIAutomationElement>, eventid: EVENTID) -> Result<()> {
+    fn HandleAutomationEvent(
+        &self,
+        sender: Ref<IUIAutomationElement>,
+        eventid: EVENTID,
+    ) -> Result<()> {
         if eventid == TEXT_CHANGED_EVENT {
             let n = TEXT_CHANGED_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             emit(AccessibilityEventKind::TextChanged, n, sender);
@@ -440,27 +466,48 @@ pub fn run() -> Result<()> {
         let _com = ComApartment::initialize()?;
         crate::windows_speech::initialize()?;
 
-        let automation: IUIAutomation = match CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) {
-            Ok(value) => value,
-            Err(_) => CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?,
-        };
+        let automation: IUIAutomation =
+            match CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) {
+                Ok(value) => value,
+                Err(_) => CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?,
+            };
         let root = automation.GetRootElement()?;
         let cache = cache(&automation);
         let focus: IUIAutomationFocusChangedEventHandler = FocusSink.into();
         let events: IUIAutomationEventHandler = EventSink.into();
         let properties: IUIAutomationPropertyChangedEventHandler = PropertySink.into();
 
-        automation.AddAutomationEventHandler(TEXT_CHANGED_EVENT, &root, TreeScope_Subtree, cache.as_ref(), &events).ok()?;
-        automation.AddAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, TreeScope_Subtree, cache.as_ref(), &events).ok()?;
-        automation.AddPropertyChangedEventHandlerNativeArray(
-            &root,
-            TreeScope_Subtree,
-            cache.as_ref(),
-            &properties,
-            PROPERTY_CHANGE_PROPERTIES.as_ptr(),
-            PROPERTY_CHANGE_PROPERTIES.len() as i32,
-        ).ok()?;
-        automation.AddFocusChangedEventHandler(cache.as_ref(), &focus).ok()?;
+        automation
+            .AddAutomationEventHandler(
+                TEXT_CHANGED_EVENT,
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &events,
+            )
+            .ok()?;
+        automation
+            .AddAutomationEventHandler(
+                TEXT_SELECTION_CHANGED_EVENT,
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &events,
+            )
+            .ok()?;
+        automation
+            .AddPropertyChangedEventHandlerNativeArray(
+                &root,
+                TreeScope_Subtree,
+                cache.as_ref(),
+                &properties,
+                PROPERTY_CHANGE_PROPERTIES.as_ptr(),
+                PROPERTY_CHANGE_PROPERTIES.len() as i32,
+            )
+            .ok()?;
+        automation
+            .AddFocusChangedEventHandler(cache.as_ref(), &focus)
+            .ok()?;
 
         println!("SCREEN_READER_RUNTIME_INIT = PASS");
         println!("UIA_INTERFACE = IUIAutomation");
@@ -483,9 +530,15 @@ pub fn run() -> Result<()> {
         }
 
         automation.RemoveFocusChangedEventHandler(&focus).ok()?;
-        automation.RemovePropertyChangedEventHandler(&root, &properties).ok()?;
-        automation.RemoveAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, &events).ok()?;
-        automation.RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, &events).ok()?;
+        automation
+            .RemovePropertyChangedEventHandler(&root, &properties)
+            .ok()?;
+        automation
+            .RemoveAutomationEventHandler(TEXT_SELECTION_CHANGED_EVENT, &root, &events)
+            .ok()?;
+        automation
+            .RemoveAutomationEventHandler(TEXT_CHANGED_EVENT, &root, &events)
+            .ok()?;
 
         println!(
             "COUNTS | focus={} | text_changed={} | text_selection={} | property_changed={}",
