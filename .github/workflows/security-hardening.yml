@@ -1,0 +1,203 @@
+name: Security Hardening
+
+on:
+  push:
+    branches: [automation/security-hardening, main]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "SECURITY.md"
+      - ".github/workflows/security-hardening.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/windows-blind-user-e2e.yml"
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supply-chain:
+    name: Supply chain and source policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-09-03
+        with:
+          components: clippy,rustfmt
+
+      - name: Verify Microsoft windows-rs commit pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='6195af4858f13bb3714e901d9bda6bc38abcfbf7'
+          count=$(grep -c "rev = \"$expected\"" Cargo.toml)
+          test "$count" -eq 2
+          if grep -E '^rev = "[0-9a-f]+"' Cargo.toml | grep -v "$expected"; then
+            echo 'Unexpected git dependency revision found' >&2
+            exit 1
+          fi
+          echo "WINDOWS_RS_PIN = PASS | sha=$expected"
+
+      - name: Reject accidental elevation or UIAccess
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches=$(grep -RniE \
+            --include='*.rs' --include='*.toml' --include='*.xml' --include='*.manifest' \
+            'uiAccess[[:space:]]*=[[:space:]]*["'"']true|requireAdministrator|highestAvailable' \
+            . --exclude-dir=.git || true)
+          if [ -n "$matches" ]; then
+            echo "$matches" >&2
+            echo 'Privilege escalation policy violation' >&2
+            exit 1
+          fi
+          echo 'PRIVILEGE_POLICY = PASS | uiAccess=false | elevation=none'
+
+      - name: Verify critical workflow actions are SHA pinned
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          files = [
+              Path('.github/workflows/security-hardening.yml'),
+              Path('.github/workflows/release.yml'),
+              Path('.github/workflows/windows-blind-user-e2e.yml'),
+          ]
+          bad = []
+          for path in files:
+              for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  match = re.search(r'\buses:\s*([^\s#]+)', line)
+                  if not match:
+                      continue
+                  ref = match.group(1)
+                  if ref.startswith('./'):
+                      continue
+                  if '@' not in ref or not re.fullmatch(r'[0-9a-f]{40}', ref.rsplit('@', 1)[1]):
+                      bad.append(f'{path}:{number}: {ref}')
+          if bad:
+              raise SystemExit('Unpinned critical actions:\n' + '\n'.join(bad))
+          print('CRITICAL_ACTION_SHA_PINNING = PASS')
+
+      - name: Format and static analysis
+        run: |
+          cargo fmt --all -- --check
+          cargo check --all-targets --locked
+          cargo clippy --all-targets --locked --no-deps -- -D warnings
+
+      - name: Install pinned cargo-audit
+        run: cargo install --locked cargo-audit --version 0.22.2
+
+      - name: RustSec vulnerability audit
+        run: cargo audit
+
+      - name: Record locked dependency graph
+        run: |
+          mkdir -p security-evidence
+          cargo tree --locked > security-evidence/cargo-tree.txt
+          cargo metadata --locked --format-version 1 > security-evidence/cargo-metadata.json
+          sha256sum Cargo.lock > security-evidence/Cargo.lock.sha256
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: security-supply-chain-evidence
+          path: security-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  windows-security:
+    name: Windows runtime security
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-09-03
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+
+      - name: Build release and run tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --all-targets --locked
+          cargo build --release --locked
+
+      - name: Assert Windows PE exploit mitigations
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe'
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $signature = [Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4)
+          if ($signature -ne "PE`0`0") { throw 'Invalid PE signature' }
+          $optional = $peOffset + 24
+          $magic = [BitConverter]::ToUInt16($bytes, $optional)
+          if ($magic -ne 0x20b) { throw "Expected PE32+ x64 image, magic=0x$($magic.ToString('x'))" }
+          $dllCharacteristics = [BitConverter]::ToUInt16($bytes, $optional + 0x46)
+          $required = [ordered]@{
+            HIGH_ENTROPY_VA = 0x0020
+            DYNAMIC_BASE = 0x0040
+            NX_COMPAT = 0x0100
+          }
+          foreach ($entry in $required.GetEnumerator()) {
+            if (($dllCharacteristics -band [int]$entry.Value) -eq 0) {
+              throw "Missing PE mitigation $($entry.Key); DllCharacteristics=0x$($dllCharacteristics.ToString('x4'))"
+            }
+          }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "PE_SECURITY = PASS | dll_characteristics=0x$($dllCharacteristics.ToString('x4')) | sha256=$hash"
+
+      - name: Assert privacy-first diagnostic defaults
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item Env:NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT -ErrorAction SilentlyContinue
+          & '.\tests\windows\RunDiagnosticRedactionE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir (Join-Path $PWD 'security-evidence\diagnostic-redaction')
+
+      - name: Assert password privacy even with CI evidence opt-in
+        shell: pwsh
+        env:
+          NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\tests\windows\RunPasswordPrivacyE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir (Join-Path $PWD 'security-evidence\password-privacy')
+
+      - name: Upload Windows security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-security-evidence
+          path: security-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
