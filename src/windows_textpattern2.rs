@@ -38,12 +38,7 @@ fn element_identity(element: &IUIAutomationElement, process_id: i32) -> String {
             .map(|value| value.display().to_string())
             .unwrap_or_default();
         let process_id = process_id.to_string();
-        crate::windows_diagnostics::identity_key(&[
-            &process_id,
-            &class_name,
-            &automation_id,
-            &name,
-        ])
+        crate::windows_diagnostics::identity_key(&[&process_id, &class_name, &automation_id, &name])
     }
 }
 
