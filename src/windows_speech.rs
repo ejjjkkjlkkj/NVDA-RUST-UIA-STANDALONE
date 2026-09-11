@@ -32,6 +32,7 @@ static SPEECH_REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_OUTPUT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_QUEUE_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SPEECH_SANITIZED_COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn create_engine() -> Result<SpeechEngine> {
     let synthesizer = SpeechSynthesizer::new()?;
@@ -141,15 +142,23 @@ pub fn initialize() -> Result<()> {
 }
 
 pub fn speak(text: &str) {
-    let text = text.trim();
+    let original = text.trim();
+    if original.is_empty() {
+        return;
+    }
+
+    let text = crate::windows_diagnostics::speech_text(original);
     if text.is_empty() {
         return;
+    }
+    if text != original {
+        SPEECH_SANITIZED_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
     let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     println!(
         "SPEECH_REQUEST #{sequence} | {}",
-        crate::windows_diagnostics::text(text)
+        crate::windows_diagnostics::text(&text)
     );
 
     let Some(dispatcher) = DISPATCHER.get() else {
@@ -160,10 +169,7 @@ pub fn speak(text: &str) {
 
     if dispatcher
         .sender
-        .send(SpeechCommand::Speak {
-            sequence,
-            text: text.to_string(),
-        })
+        .send(SpeechCommand::Speak { sequence, text })
         .is_err()
     {
         SPEECH_QUEUE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -200,5 +206,9 @@ pub fn print_summary() {
     println!(
         "SPEECH_QUEUE_COUNTS | enqueue_failures={}",
         SPEECH_QUEUE_FAILURE_COUNT.load(Ordering::Relaxed)
+    );
+    println!(
+        "SPEECH_SECURITY_COUNTS | sanitized_or_truncated={}",
+        SPEECH_SANITIZED_COUNT.load(Ordering::Relaxed)
     );
 }
