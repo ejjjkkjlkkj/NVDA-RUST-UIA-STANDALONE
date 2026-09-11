@@ -45,6 +45,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo fmt --all
           cargo test --lib --locked --target x86_64-pc-windows-msvc
           cargo clippy --lib --locked --target x86_64-pc-windows-msvc --no-deps -- -D warnings
