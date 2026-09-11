@@ -23,14 +23,6 @@ struct SelectionState {
     text: String,
 }
 
-fn one_line(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
-        .replace('|', "\\|")
-}
-
 fn element_identity(element: &IUIAutomationElement, process_id: i32) -> String {
     unsafe {
         let automation_id = element
@@ -129,7 +121,7 @@ fn update_selection_and_speak(identity: String, new_text: String) {
     }
     println!(
         "SELECTION_SPEECH #{sequence} | action={action} | text={}",
-        one_line(&spoken_delta)
+        crate::windows_diagnostics::text(&spoken_delta)
     );
     crate::windows_speech::speak(&format!("{spoken_delta} {action}"));
 }
@@ -202,12 +194,10 @@ pub fn inspect_selection(sequence: u64, element: &IUIAutomationElement) {
         };
 
         let selected_text = selected_parts.join("\n");
-        let selection_text_log = if selected_text.is_empty() {
-            "<none>".to_string()
-        } else {
+        if !selected_text.is_empty() {
             SELECTION_TEXT_COUNT.fetch_add(1, Ordering::Relaxed);
-            one_line(&selected_text)
-        };
+        }
+        let selection_text_log = crate::windows_diagnostics::optional_text(&selected_text);
 
         println!(
             "TEXT_PATTERN2 #{sequence} | PID={process_id} | status=pass | caret_active={} | selection_ranges={selection_ranges} | selection_text={selection_text_log}",
