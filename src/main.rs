@@ -1,8 +1,6 @@
 #[cfg(windows)]
 mod windows_diagnostics;
 #[cfg(windows)]
-mod windows_runtime_v2;
-#[cfg(windows)]
 mod windows_runtime_v3;
 #[cfg(windows)]
 mod windows_speech;
