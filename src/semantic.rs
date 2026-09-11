@@ -69,6 +69,50 @@ impl Role {
             Self::Terminal => "terminal",
         }
     }
+
+    /// Human-facing role label. Canonical names remain stable for logs/tests;
+    /// speech labels can evolve or be localized independently.
+    pub const fn speech_name(self) -> &'static str {
+        match self {
+            Self::Unknown => "",
+            Self::Application => "application",
+            Self::Window => "window",
+            Self::Dialog => "dialog",
+            Self::Document => "document",
+            Self::Heading => "heading",
+            Self::Paragraph => "paragraph",
+            Self::StaticText => "text",
+            Self::EditableText => "edit",
+            Self::Button => "button",
+            Self::CheckBox => "check box",
+            Self::RadioButton => "radio button",
+            Self::ComboBox => "combo box",
+            Self::List => "list",
+            Self::ListItem => "list item",
+            Self::Tree => "tree view",
+            Self::TreeItem => "tree view item",
+            Self::Table => "table",
+            Self::Row => "row",
+            Self::Cell => "cell",
+            Self::Link => "link",
+            Self::Image => "graphic",
+            Self::Slider => "slider",
+            Self::ProgressBar => "progress bar",
+            Self::Menu => "menu",
+            Self::MenuItem => "menu item",
+            Self::Tab => "tab",
+            Self::TabPanel => "tab control",
+            Self::Toolbar => "tool bar",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    pub const fn reports_value_on_focus(self) -> bool {
+        matches!(
+            self,
+            Self::EditableText | Self::ComboBox | Self::Slider | Self::ProgressBar
+        )
+    }
 }
 
 impl fmt::Display for Role {
@@ -175,6 +219,14 @@ impl AccessibleNode {
             ""
         }
     }
+
+    pub fn safe_value(&self) -> &str {
+        if self.has_state(State::Password) {
+            ""
+        } else {
+            self.value.trim()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +241,21 @@ mod tests {
     }
 
     #[test]
-    fn name_has_priority_for_presentation() {
+    fn role_speech_names_are_human_facing() {
+        assert_eq!(Role::CheckBox.speech_name(), "check box");
+        assert_eq!(Role::EditableText.speech_name(), "edit");
+        assert_eq!(Role::TreeItem.speech_name(), "tree view item");
+    }
+
+    #[test]
+    fn value_reporting_is_role_specific() {
+        assert!(Role::EditableText.reports_value_on_focus());
+        assert!(Role::ComboBox.reports_value_on_focus());
+        assert!(!Role::Button.reports_value_on_focus());
+    }
+
+    #[test]
+    fn name_has_priority_for_primary_text() {
         let node = AccessibleNode {
             name: "Save".into(),
             value: "ignored".into(),
@@ -199,12 +265,13 @@ mod tests {
     }
 
     #[test]
-    fn password_value_is_never_primary_text() {
+    fn password_value_is_never_primary_or_safe_text() {
         let node = AccessibleNode {
             value: "secret".into(),
             states: vec![State::Password],
             ..AccessibleNode::default()
         };
         assert_eq!(node.primary_text(), "");
+        assert_eq!(node.safe_value(), "");
     }
 }
