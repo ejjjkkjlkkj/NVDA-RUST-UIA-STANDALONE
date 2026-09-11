@@ -19,7 +19,15 @@ struct SpeechEngine {
 }
 
 enum SpeechCommand {
-    Speak { sequence: u64, text: String },
+    Speak {
+        sequence: u64,
+        text: String,
+    },
+    Replace {
+        sequence: u64,
+        generation: u64,
+        text: String,
+    },
     Flush(mpsc::SyncSender<()>),
 }
 
@@ -32,6 +40,8 @@ static SPEECH_REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_OUTPUT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SPEECH_QUEUE_FAILURE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SPEECH_REPLACED_COUNT: AtomicU64 = AtomicU64::new(0);
+static LATEST_REPLACE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn create_engine() -> Result<SpeechEngine> {
     let synthesizer = SpeechSynthesizer::new()?;
@@ -42,39 +52,90 @@ fn create_engine() -> Result<SpeechEngine> {
     })
 }
 
+fn synthesize(engine: &SpeechEngine, text: &str) -> Result<MediaSource> {
+    let request = HSTRING::from(text);
+    let operation = engine.synthesizer.SynthesizeTextToStreamAsync(&request)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    let stream = loop {
+        match operation.GetResults() {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    };
+
+    let content_type = stream.ContentType()?;
+    MediaSource::CreateFromStream(&stream, &content_type)
+}
+
+fn output_pass(sequence: u64, text: &str) {
+    SPEECH_OUTPUT_COUNT.fetch_add(1, Ordering::Relaxed);
+    println!("SPEECH_OUTPUT #{sequence} = PASS | {text}");
+}
+
+fn output_fail(sequence: u64, error: &windows_core::Error) {
+    SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+    eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | {error}");
+}
+
 fn render(engine: &SpeechEngine, sequence: u64, text: &str) {
     let result = (|| -> Result<()> {
-        let request = HSTRING::from(text);
-        let operation = engine.synthesizer.SynthesizeTextToStreamAsync(&request)?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-
-        let stream = loop {
-            match operation.GetResults() {
-                Ok(stream) => break stream,
-                Err(error) if Instant::now() < deadline => {
-                    let _ = error;
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => return Err(error),
-            }
-        };
-
-        let content_type = stream.ContentType()?;
-        let source = MediaSource::CreateFromStream(&stream, &content_type)?;
+        let source = synthesize(engine, text)?;
         engine.player.SetSource(&source)?;
         engine.player.Play()?;
         Ok(())
     })();
 
     match result {
-        Ok(()) => {
-            SPEECH_OUTPUT_COUNT.fetch_add(1, Ordering::Relaxed);
-            println!("SPEECH_OUTPUT #{sequence} = PASS | {text}");
-        }
+        Ok(()) => output_pass(sequence, text),
+        Err(error) => output_fail(sequence, &error),
+    }
+}
+
+fn render_replaceable(
+    engine: &SpeechEngine,
+    sequence: u64,
+    generation: u64,
+    text: &str,
+) {
+    if generation != LATEST_REPLACE_GENERATION.load(Ordering::Acquire) {
+        SPEECH_REPLACED_COUNT.fetch_add(1, Ordering::Relaxed);
+        println!("SPEECH_OUTPUT #{sequence} = REPLACED | {text}");
+        return;
+    }
+
+    // Interrupt audio that is already playing before synthesizing the latest
+    // high-priority navigation/selection announcement.
+    let _ = engine.player.Pause();
+
+    let result = synthesize(engine, text);
+    let source = match result {
+        Ok(source) => source,
         Err(error) => {
-            SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
-            eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | {error}");
+            output_fail(sequence, &error);
+            return;
         }
+    };
+
+    // A newer replaceable request may have arrived while synthesis was in
+    // progress. Never start stale audio in that case.
+    if generation != LATEST_REPLACE_GENERATION.load(Ordering::Acquire) {
+        SPEECH_REPLACED_COUNT.fetch_add(1, Ordering::Relaxed);
+        println!("SPEECH_OUTPUT #{sequence} = REPLACED | {text}");
+        return;
+    }
+
+    match engine
+        .player
+        .SetSource(&source)
+        .and_then(|_| engine.player.Play())
+    {
+        Ok(()) => output_pass(sequence, text),
+        Err(error) => output_fail(sequence, &error),
     }
 }
 
@@ -101,6 +162,11 @@ fn speech_worker(receiver: mpsc::Receiver<SpeechCommand>, ready: mpsc::SyncSende
     while let Ok(command) = receiver.recv() {
         match command {
             SpeechCommand::Speak { sequence, text } => render(&engine, sequence, &text),
+            SpeechCommand::Replace {
+                sequence,
+                generation,
+                text,
+            } => render_replaceable(&engine, sequence, generation, &text),
             SpeechCommand::Flush(done) => {
                 let _ = done.send(());
             }
@@ -133,7 +199,22 @@ pub fn initialize() -> Result<()> {
 
     println!("SPEECH_OUTPUT_INIT = PASS");
     println!("SPEECH_DISPATCH = ASYNC_WORKER");
+    println!("SPEECH_REPLACE_POLICY = LATEST_WINS");
     Ok(())
+}
+
+fn enqueue(command: SpeechCommand, sequence: u64) {
+    let Some(dispatcher) = DISPATCHER.get() else {
+        SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+        eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | dispatcher-not-initialized");
+        return;
+    };
+
+    if dispatcher.sender.send(command).is_err() {
+        SPEECH_QUEUE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+        SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
+        eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | speech-worker-disconnected");
+    }
 }
 
 pub fn speak(text: &str) {
@@ -143,26 +224,37 @@ pub fn speak(text: &str) {
     }
 
     let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    println!("SPEECH_REQUEST #{sequence} | {text}");
-
-    let Some(dispatcher) = DISPATCHER.get() else {
-        SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
-        eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | dispatcher-not-initialized");
-        return;
-    };
-
-    if dispatcher
-        .sender
-        .send(SpeechCommand::Speak {
+    println!("SPEECH_REQUEST #{sequence} | mode=queue | {text}");
+    enqueue(
+        SpeechCommand::Speak {
             sequence,
             text: text.to_string(),
-        })
-        .is_err()
-    {
-        SPEECH_QUEUE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
-        SPEECH_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
-        eprintln!("SPEECH_OUTPUT #{sequence} = FAIL | speech-worker-disconnected");
+        },
+        sequence,
+    );
+}
+
+/// Queue a high-priority announcement where only the newest request remains
+/// relevant. This is intended for rapid caret/selection/navigation feedback.
+pub fn speak_latest(text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
     }
+
+    let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let generation = LATEST_REPLACE_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    println!(
+        "SPEECH_REQUEST #{sequence} | mode=replace | generation={generation} | {text}"
+    );
+    enqueue(
+        SpeechCommand::Replace {
+            sequence,
+            generation,
+            text: text.to_string(),
+        },
+        sequence,
+    );
 }
 
 fn flush() {
@@ -191,7 +283,8 @@ pub fn print_summary() {
         SPEECH_FAILURE_COUNT.load(Ordering::Relaxed)
     );
     println!(
-        "SPEECH_QUEUE_COUNTS | enqueue_failures={}",
-        SPEECH_QUEUE_FAILURE_COUNT.load(Ordering::Relaxed)
+        "SPEECH_QUEUE_COUNTS | enqueue_failures={} | replaced={}",
+        SPEECH_QUEUE_FAILURE_COUNT.load(Ordering::Relaxed),
+        SPEECH_REPLACED_COUNT.load(Ordering::Relaxed)
     );
 }
