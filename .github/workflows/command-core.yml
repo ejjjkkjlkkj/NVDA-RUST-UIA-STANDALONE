@@ -6,6 +6,7 @@ on:
     paths:
       - "src/commands.rs"
       - "src/navigation.rs"
+      - "src/navigation_security.rs"
       - "src/lib.rs"
       - "Cargo.toml"
       - "Cargo.lock"
