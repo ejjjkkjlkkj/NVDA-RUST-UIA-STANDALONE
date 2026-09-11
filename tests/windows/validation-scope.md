@@ -8,7 +8,9 @@ Validated scenarios include:
 - native Notepad editing and Shift+Arrow selection;
 - UIA focus, text, selection, value, and toggle evidence;
 - asynchronous Windows speech synthesis dispatch and flush;
+- spoken checkbox state and spoken combo-box value changes, including `Detailed`;
 - TextPattern2 caret and selection extraction where supported;
+- TextPattern2 selection-delta speech for keyboard selection changes;
 - password-field redaction and explicit secret-leak checks;
 - an official pinned `nvaccess/nvda` source reference fetched read-only for comparison.
 
