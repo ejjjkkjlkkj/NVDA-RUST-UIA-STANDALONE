@@ -76,6 +76,7 @@ if (-not $counts.Success) {
 
 $summary = Get-Content $SummaryPath -Raw | ConvertFrom-Json
 $summary | Add-Member -NotePropertyName textPattern2Asserted -NotePropertyValue $true -Force
+$summary | Add-Member -NotePropertyName textPattern2Scope -NotePropertyValue 'native-notepad-only' -Force
 $summary | Add-Member -NotePropertyName nativeTextPattern2Events -NotePropertyValue $nativePatternLines.Count -Force
 $summary | Add-Member -NotePropertyName nativeActiveCaretEvents -NotePropertyValue $activeCaret.Count -Force
 $summary | Add-Member -NotePropertyName nativeSelectionTextEvents -NotePropertyValue $selectedText.Count -Force
@@ -84,14 +85,9 @@ $summary | Add-Member -NotePropertyName caretActiveGlobal -NotePropertyValue ([i
 $summary | Add-Member -NotePropertyName selectionTextGlobal -NotePropertyValue ([int64]$counts.Groups[3].Value) -Force
 $summary | Add-Member -NotePropertyName protectedTextPatternEvents -NotePropertyValue ([int64]$counts.Groups[4].Value) -Force
 
-if ($null -ne $summary.currentLimitations) {
-    $summary.currentLimitations = @(
-        $summary.currentLimitations |
-            Where-Object { $_ -ne 'WinForms caret/selection UIA event support is not yet guaranteed' }
-    )
-}
-
+# This assertion only proves TextPattern2 behavior on the native Notepad probe.
+# Keep the WinForms caret/selection limitation until a WinForms-specific test proves it.
 $summary | ConvertTo-Json -Depth 10 | Set-Content -Path $SummaryPath -Encoding utf8
 $nativePatternLines | Set-Content -Path (Join-Path (Split-Path $SummaryPath -Parent) 'native-textpattern2-events.txt') -Encoding utf8
 
-"TEXT_PATTERN2_E2E = PASS | pid=$($native.pid) | pattern_events=$($nativePatternLines.Count) | active_caret=$($activeCaret.Count) | selected_text=$($selectedText.Count)"
+"TEXT_PATTERN2_E2E = PASS | scope=native-notepad-only | pid=$($native.pid) | pattern_events=$($nativePatternLines.Count) | active_caret=$($activeCaret.Count) | selected_text=$($selectedText.Count)"

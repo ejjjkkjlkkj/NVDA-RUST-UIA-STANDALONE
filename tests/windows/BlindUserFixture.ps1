@@ -9,6 +9,12 @@ $ProgressPreference = 'SilentlyContinue'
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $eventLog = Join-Path $EvidenceDir 'fixture-actions.log'
 $readyPath = Join-Path $EvidenceDir 'fixture-ready.json'
+$bootstrapLog = Join-Path $EvidenceDir 'fixture-bootstrap.log'
+
+function Write-Bootstrap {
+    param([Parameter(Mandatory = $true)][string]$Stage)
+    "$(Get-Date -Format o)|$Stage|pid=$PID" | Add-Content -Path $bootstrapLog -Encoding utf8
+}
 
 function Write-FixtureEvent {
     param(
@@ -22,9 +28,11 @@ function Write-FixtureEvent {
         Add-Content -Path $eventLog -Encoding utf8
 }
 
+Write-Bootstrap -Stage 'START'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+Write-Bootstrap -Stage 'WINFORMS_READY'
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Blind User Keyboard E2E Fixture'
@@ -83,6 +91,7 @@ $status.AutoSize = $true
 $status.SetBounds(220, 163, 360, 28)
 
 $form.Controls.AddRange(@($heading, $editor, $check, $mode, $apply, $status))
+Write-Bootstrap -Stage 'CONTROLS_READY'
 
 $editor.Add_GotFocus({ Write-FixtureEvent -Kind 'FOCUS' -Name 'Editor' -Value $editor.Text })
 $editor.Add_TextChanged({ Write-FixtureEvent -Kind 'TEXT' -Name 'Editor' -Value $editor.Text })
@@ -116,27 +125,34 @@ $failsafe.Add_Tick({
     $form.Close()
 })
 
-$form.Add_Shown({
-    $form.Activate()
-    $form.ActiveControl = $editor
-    $editor.SelectAll()
+# Do not depend on the Shown event to publish readiness. Hosted Windows runners can
+# create the process before the first GUI event is delivered. Create the HWND and
+# readiness evidence synchronously, then enter the message loop.
+Write-Bootstrap -Stage 'SHOW_BEGIN'
+$form.Show()
+[System.Windows.Forms.Application]::DoEvents()
+$form.Activate()
+$form.ActiveControl = $editor
+$editor.SelectAll()
+Write-Bootstrap -Stage "WINDOW_CREATED|hwnd=$($form.Handle.ToInt64())"
 
-    $ready = [ordered]@{
-        schemaVersion = 1
-        pid = $PID
-        windowHandle = $form.Handle.ToInt64()
-        windowTitle = $form.Text
-        initialControl = 'Blind user document'
-        controls = @(
-            'Blind user document',
-            'Enable feature',
-            'Reading mode',
-            'Apply changes'
-        )
-    }
-    $ready | ConvertTo-Json -Depth 4 | Set-Content -Path $readyPath -Encoding utf8
-    Write-FixtureEvent -Kind 'READY' -Name 'Window' -Value "PID=$PID;HWND=$($form.Handle.ToInt64())"
-    $failsafe.Start()
-})
+$ready = [ordered]@{
+    schemaVersion = 2
+    pid = $PID
+    windowHandle = $form.Handle.ToInt64()
+    windowTitle = $form.Text
+    initialControl = 'Blind user document'
+    controls = @(
+        'Blind user document',
+        'Enable feature',
+        'Reading mode',
+        'Apply changes'
+    )
+}
+$ready | ConvertTo-Json -Depth 4 | Set-Content -Path $readyPath -Encoding utf8
+Write-FixtureEvent -Kind 'READY' -Name 'Window' -Value "PID=$PID;HWND=$($form.Handle.ToInt64())"
+Write-Bootstrap -Stage 'READY_WRITTEN'
+$failsafe.Start()
 
 [System.Windows.Forms.Application]::Run($form)
+Write-Bootstrap -Stage 'EXIT'

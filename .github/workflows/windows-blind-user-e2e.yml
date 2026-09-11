@@ -38,11 +38,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Smoke-test WinForms fixture before Rust build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence\fixture-smoke'
+          & '.\tests\windows\SmokeBlindUserFixture.ps1' -EvidenceDir $evidence
+
       - name: Install latest stable Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Build Windows screen reader
         shell: pwsh
@@ -118,7 +127,8 @@ jobs:
             -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
             -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
 
-      - name: Assert TextPattern2 caret and selection
+      - name: Assert TextPattern2 caret and selection when available
+        if: hashFiles('tests/windows/AssertTextPattern2Evidence.ps1') != ''
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -148,10 +158,11 @@ jobs:
             $lines += "- Speech pipeline asserted: $($data.speechPipelineAsserted)"
             $lines += "- Speech requests / outputs / failures: $($data.speechRequests) / $($data.speechOutputsStarted) / $($data.speechFailures)"
             $lines += "- Physical audio device asserted: $($data.physicalAudioDeviceAsserted)"
-            $lines += "- TextPattern2 asserted: $($data.textPattern2Asserted)"
-            $lines += "- Native active-caret events: $($data.nativeActiveCaretEvents)"
-            $lines += "- Native selected-text events: $($data.nativeSelectionTextEvents)"
-            $lines += "- Protected TextPattern2 events: $($data.protectedTextPatternEvents)"
+            if ($null -ne $data.textPattern2Asserted) {
+              $lines += "- TextPattern2 asserted: $($data.textPattern2Asserted)"
+              $lines += "- Native active-caret events: $($data.nativeActiveCaretEvents)"
+              $lines += "- Native selected-text events: $($data.nativeSelectionTextEvents)"
+            }
             $lines += "- Official NVDA reference SHA: $($data.nvdaOfficialReference.sha)"
             $lines += '- NVDA runtime executed in this scenario: no'
             $lines += ''
