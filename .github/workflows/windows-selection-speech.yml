@@ -1,0 +1,130 @@
+name: Windows Selection Speech
+
+on:
+  push:
+    branches: [automation/selection-speech]
+    paths:
+      - "src/**"
+      - "tests/windows/**"
+      - "reference/nvda-baseline.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-selection-speech.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-selection-speech-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selection-speech:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Fetch pinned official NVDA reference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = Get-Content 'reference\nvda-baseline.json' -Raw | ConvertFrom-Json
+          if ($baseline.repository -ne 'https://github.com/nvaccess/nvda.git') {
+            throw 'NVDA baseline repository is not official nvaccess/nvda'
+          }
+          $nvdaDir = Join-Path $env:RUNNER_TEMP 'nvda-official-reference'
+          git init $nvdaDir
+          git -C $nvdaDir remote add origin $baseline.repository
+          git -C $nvdaDir fetch --depth 1 origin $baseline.sha
+          $resolved = (git -C $nvdaDir rev-parse FETCH_HEAD).Trim()
+          if ($resolved -ne $baseline.sha) {
+            throw "Official NVDA reference mismatch: expected=$($baseline.sha) resolved=$resolved"
+          }
+          "NVDA_OFFICIAL_REFERENCE = PASS | sha=$resolved"
+
+      - name: Run keyboard-only blind-user scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-selection-speech-evidence'
+          & '.\tests\windows\RunBlindUserKeyboardE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
+      - name: Assert selection delta speech
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-selection-speech-evidence'
+          $logPath = Join-Path $evidence 'screen-reader.stdout.txt'
+          $lines = @(Get-Content $logPath)
+          $log = $lines -join "`n"
+
+          if (-not $log.Contains('TEXT_PATTERN2_SELECTION_SPEECH = DELTA_ENABLED')) {
+            throw 'Selection speech marker is missing'
+          }
+
+          foreach ($phrase in @('e selected', 'b selected', 'o selected', 'r selected')) {
+            $escaped = [regex]::Escape($phrase)
+            $outputs = @(
+              $lines | Where-Object { $_ -match "^SPEECH_OUTPUT #\d+ = PASS \| $escaped\s*$" }
+            )
+            if ($outputs.Count -lt 1) {
+              throw "Missing TextPattern2 selection speech output: $phrase"
+            }
+          }
+
+          $counts = [regex]::Match($log, 'SELECTION_SPEECH_COUNTS \| total=(\d+) \| selected=(\d+) \| unselected=(\d+)')
+          if (-not $counts.Success) { throw 'Missing SELECTION_SPEECH_COUNTS' }
+          $total = [int]$counts.Groups[1].Value
+          $selected = [int]$counts.Groups[2].Value
+          if ($total -lt 4 -or $selected -lt 4) {
+            throw "Too few selection speech deltas: total=$total selected=$selected"
+          }
+
+          $speechCounts = [regex]::Match($log, 'SPEECH_COUNTS \| requested=(\d+) \| output=(\d+) \| failed=(\d+)')
+          if (-not $speechCounts.Success) { throw 'Missing SPEECH_COUNTS' }
+          $requested = [int]$speechCounts.Groups[1].Value
+          $output = [int]$speechCounts.Groups[2].Value
+          $failed = [int]$speechCounts.Groups[3].Value
+          if ($requested -ne $output -or $failed -ne 0) {
+            throw "Selection speech pipeline mismatch: requested=$requested output=$output failed=$failed"
+          }
+
+          "SELECTION_SPEECH_E2E = PASS | total=$total | selected=$selected | requested=$requested | output=$output"
+
+      - name: Assert password privacy still blocks selection speech content
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-selection-speech-evidence\password-privacy'
+          & '.\tests\windows\RunPasswordPrivacyE2E.ps1' `
+            -ScreenReaderExe (Join-Path $PWD 'target\release\nvda-rust-uia-standalone.exe') `
+            -EvidenceDir $evidence
+
+          $summary = Get-Content (Join-Path $evidence 'password-privacy-summary.json') -Raw | ConvertFrom-Json
+          if (-not [bool]$summary.pass) { throw 'Password privacy summary did not pass' }
+          if ([int]$summary.secretLeakCount -ne 0) { throw 'Password privacy leak detected' }
+          if ([int]$summary.protectedTextPatternEvents -lt 1) { throw 'Protected TextPattern2 evidence missing' }
+          'SELECTION_SPEECH_PASSWORD_PRIVACY = PASS | leaks=0'
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-selection-speech-evidence
+          path: windows-selection-speech-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
