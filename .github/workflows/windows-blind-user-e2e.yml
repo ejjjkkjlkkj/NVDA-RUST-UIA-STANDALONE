@@ -2,7 +2,7 @@ name: Windows Blind User Keyboard E2E
 
 on:
   push:
-    branches: [main, automation/blind-user-keyboard-e2e]
+    branches: [main, automation/blind-user-keyboard-e2e, automation/caret-textpattern2]
     paths:
       - "src/**"
       - "tests/windows/**"
@@ -118,6 +118,16 @@ jobs:
             -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
             -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
 
+      - name: Assert TextPattern2 caret and selection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence'
+          & '.\tests\windows\AssertTextPattern2Evidence.ps1' `
+            -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
+            -NativeProbePath (Join-Path $evidence 'native-app-probe.json') `
+            -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+
       - name: Publish blind-user summary
         if: always()
         shell: pwsh
@@ -134,12 +144,14 @@ jobs:
             $lines += "- Synthesized mouse calls: $($data.synthesizedMouseInputCalls)"
             $lines += "- Keyboard actions: $($data.externalKeyboardActions)"
             $lines += "- Controlled fixture UIA events: $($data.fixtureUiaEvents)"
-            $lines += "- Fixture TextChanged events: $($data.fixtureTextChangedEvents)"
-            $lines += "- Fixture TextSelectionChanged events: $($data.fixtureTextSelectionEvents)"
             $lines += "- Native application UIA events: $($data.nativeAppUiaEvents)"
             $lines += "- Speech pipeline asserted: $($data.speechPipelineAsserted)"
             $lines += "- Speech requests / outputs / failures: $($data.speechRequests) / $($data.speechOutputsStarted) / $($data.speechFailures)"
             $lines += "- Physical audio device asserted: $($data.physicalAudioDeviceAsserted)"
+            $lines += "- TextPattern2 asserted: $($data.textPattern2Asserted)"
+            $lines += "- Native active-caret events: $($data.nativeActiveCaretEvents)"
+            $lines += "- Native selected-text events: $($data.nativeSelectionTextEvents)"
+            $lines += "- Protected TextPattern2 events: $($data.protectedTextPatternEvents)"
             $lines += "- Official NVDA reference SHA: $($data.nvdaOfficialReference.sha)"
             $lines += '- NVDA runtime executed in this scenario: no'
             $lines += ''
