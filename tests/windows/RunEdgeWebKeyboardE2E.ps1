@@ -94,7 +94,9 @@ function Send-UserKeys {
 
 function Wait-ForEdgeWindow {
     param(
-        [Parameter(Mandatory = $true)][int[]]$ExistingIds,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [int[]]$ExistingIds,
         [int]$Seconds = 15
     )
     $deadline = (Get-Date).AddSeconds($Seconds)
