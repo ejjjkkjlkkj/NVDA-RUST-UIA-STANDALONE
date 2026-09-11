@@ -135,14 +135,14 @@ try {
         '--no-first-run',
         '--disable-extensions',
         '--force-renderer-accessibility',
-        "--user-data-dir=$userDataDir"
+        "--user-data-dir=`"$userDataDir`""
     )
     $edgeLauncher = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -PassThru
     Write-Controller "START_EDGE|launcher_pid=$($edgeLauncher.Id)|uri=$fixtureUri"
 
     $edgeWindow = Wait-ForEdgeWindow -ExistingIds $existingEdgeIds -Seconds 15
     Write-Controller "EDGE_WINDOW|pid=$($edgeWindow.Id)|hwnd=$($edgeWindow.MainWindowHandle)"
-    Focus-Window -Handle ([int64]$edgeWindow.MainWindowHandle -Label 'Edge kiosk web fixture'
+    Focus-Window -Handle ([int64]$edgeWindow.MainWindowHandle) -Label 'Edge kiosk web fixture'
     Start-Sleep -Seconds 2
 
     # The HTML fixture autofocuses the first edit. Functional interaction below is keyboard-only.
@@ -171,8 +171,8 @@ finally {
         Get-Process msedge -ErrorAction SilentlyContinue |
             Where-Object { $_.Id -notin $existingEdgeIds }
     )
-    foreach ($process in $newEdgeProcesses) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    foreach ($edgeProcess in $newEdgeProcesses) {
+        Stop-Process -Id $edgeProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if (-not $reader.HasExited) {
         Stop-Process -Id $reader.Id -Force -ErrorAction SilentlyContinue
@@ -236,14 +236,6 @@ $keyboardActions = @(
 if ($keyboardActions.Count -lt 9) {
     throw "Expected at least 9 external keyboard actions in Edge E2E, observed $($keyboardActions.Count)"
 }
-
-$webFocusLines = @(
-    $screenReaderLines |
-        Where-Object {
-            $_ -match '^FOCUS #' -and
-            ($expectedControls | ForEach-Object { [regex]::Escape($_) } | ForEach-Object { if ($_ -and $args[0] -match "Name=$_") { $true } })
-        }
-)
 
 $valueEvents = @(
     $screenReaderLines | Where-Object { $_ -match '^PROPERTY_CHANGED/UIA_30045\[ValueValue\]' -and $_ -match 'Framework=Chrome' }
