@@ -19,9 +19,8 @@ fn parse_opt_in(value: Option<String>) -> bool {
 }
 
 pub fn include_sensitive_text() -> bool {
-    *INCLUDE_SENSITIVE_TEXT.get_or_init(|| {
-        parse_opt_in(env::var("NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT").ok())
-    })
+    *INCLUDE_SENSITIVE_TEXT
+        .get_or_init(|| parse_opt_in(env::var("NVDA_RUST_DIAGNOSTICS_INCLUDE_TEXT").ok()))
 }
 
 fn sanitize_untrusted(value: &str, max_chars: usize) -> String {
@@ -111,7 +110,10 @@ mod tests {
 
     #[test]
     fn hostile_control_characters_are_neutralized() {
-        assert_eq!(sanitize_untrusted("safe\u{0}name\nnext", 100), "safe name next");
+        assert_eq!(
+            sanitize_untrusted("safe\u{0}name\nnext", 100),
+            "safe name next"
+        );
         assert_eq!(speech_text("one\r\n\ttwo"), "one two");
     }
 

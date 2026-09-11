@@ -134,10 +134,7 @@ pub fn print_init_marker() {
 pub fn inspect_selection(sequence: u64, element: &IUIAutomationElement) {
     unsafe {
         let process_id = element.CurrentProcessId().unwrap_or_default();
-        let is_password: bool = element
-            .CurrentIsPassword()
-            .map(Into::into)
-            .unwrap_or(false);
+        let is_password: bool = element.CurrentIsPassword().map(Into::into).unwrap_or(false);
 
         if is_password {
             TEXT_PATTERN2_PROTECTED_COUNT.fetch_add(1, Ordering::Relaxed);

@@ -173,10 +173,7 @@ fn observe(element: &IUIAutomationElement) -> Observation {
             Ok(value) => value.into(),
             Err(_) => {
                 fallback += 1;
-                element
-                    .CurrentIsPassword()
-                    .map(Into::into)
-                    .unwrap_or(false)
+                element.CurrentIsPassword().map(Into::into).unwrap_or(false)
             }
         };
 

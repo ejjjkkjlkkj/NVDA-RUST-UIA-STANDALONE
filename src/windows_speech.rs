@@ -6,9 +6,7 @@ use std::{
 };
 
 use windows::Media::{
-    Core::MediaSource,
-    Playback::MediaPlayer,
-    SpeechSynthesis::SpeechSynthesizer,
+    Core::MediaSource, Playback::MediaPlayer, SpeechSynthesis::SpeechSynthesizer,
 };
 use windows::Win32::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows_core::{Error, HRESULT, HSTRING, Result};
@@ -83,7 +81,11 @@ fn render(engine: &SpeechEngine, sequence: u64, text: &str) {
 }
 
 fn speech_worker(receiver: mpsc::Receiver<SpeechCommand>, ready: mpsc::SyncSender<bool>) {
-    let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED as u32).ok().is_ok() };
+    let com_initialized = unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED as u32)
+            .ok()
+            .is_ok()
+    };
     if !com_initialized {
         let _ = ready.send(false);
         return;
@@ -183,7 +185,11 @@ fn flush() {
         return;
     };
     let (done_tx, done_rx) = mpsc::sync_channel(1);
-    if dispatcher.sender.send(SpeechCommand::Flush(done_tx)).is_err() {
+    if dispatcher
+        .sender
+        .send(SpeechCommand::Flush(done_tx))
+        .is_err()
+    {
         SPEECH_QUEUE_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed);
         return;
     }
