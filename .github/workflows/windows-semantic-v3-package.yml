@@ -1,0 +1,115 @@
+name: Windows Semantic V3 Package
+
+on:
+  push:
+    branches: [automation/nvda-semantic-core]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-semantic-v3-package.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Semantic V3 Windows x64 package
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: semantic-v3-package-windows-x64
+
+      - name: Quality and release build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --all
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked --no-deps -- -D warnings
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Verify PE mitigations
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $exe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
+          if (-not (Test-Path $exe)) { throw "Release executable missing: $exe" }
+          $dumpbin = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe x64 not found' }
+          $headers = & $dumpbin.FullName /headers $exe | Out-String
+          if ($headers -notmatch '8664 machine \(x64\)') { throw 'PE is not x64' }
+          if ($headers -notmatch 'High Entropy Virtual Addresses') { throw 'HIGH_ENTROPY_VA missing' }
+          if ($headers -notmatch 'Dynamic base') { throw 'ASLR missing' }
+          if ($headers -notmatch 'NX compatible') { throw 'NX_COMPAT missing' }
+          'PE_SECURITY = PASS'
+
+      - name: Stage test package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist-semantic-v3'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $sourceExe = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\nvda-rust-uia-standalone.exe'
+          $targetExe = Join-Path $dist 'nvda-rust-uia-standalone.exe'
+          Copy-Item $sourceExe $targetExe
+          $hash = (Get-FileHash $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  nvda-rust-uia-standalone.exe" | Set-Content (Join-Path $dist 'nvda-rust-uia-standalone.exe.sha256') -Encoding ascii
+          @(
+            'NVDA Rust UIA Standalone - Semantic V3 test build',
+            "Commit: $env:GITHUB_SHA",
+            'Architecture: UIA -> AccessibleNode -> Presentation -> Speech',
+            'Speech: interactive latest-wins; stale feedback replaced',
+            'Target: x86_64-pc-windows-msvc',
+            "rustc: $(rustc --version)",
+            'Privilege: asInvoker; no administrator requirement',
+            'UIAccess: disabled',
+            'Diagnostics: user text and text length redacted by default',
+            'Password content: always redacted',
+            'Authenticode: UNSIGNED DEVELOPMENT BUILD',
+            "SHA256: $hash"
+          ) | Set-Content (Join-Path $dist 'BUILD-INFO.txt') -Encoding utf8
+          @(
+            'Semantic V3 - build de test Windows x64',
+            '',
+            'Ne pas lancer en administrateur.',
+            'Conserver Microsoft Defender et SmartScreen actifs.',
+            'Fermer temporairement NVDA ou JAWS si les voix se chevauchent.',
+            'Commencer par START-5-MINUTES.cmd.',
+            'Tester au clavier uniquement dans Bloc-notes, Parametres, Terminal et Microsoft Edge.',
+            'Ce build est non signe Authenticode et reste un build de developpement.'
+          ) | Set-Content (Join-Path $dist 'README-TEST.txt') -Encoding utf8
+          @('@echo off','cd /d "%~dp0"','nvda-rust-uia-standalone.exe 300','pause') |
+            Set-Content (Join-Path $dist 'START-5-MINUTES.cmd') -Encoding ascii
+          Get-ChildItem $dist | Format-Table Name, Length
+
+      - name: Upload Windows x64 package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: nvda-rust-uia-semantic-v3-windows-x64
+          path: dist-semantic-v3/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
