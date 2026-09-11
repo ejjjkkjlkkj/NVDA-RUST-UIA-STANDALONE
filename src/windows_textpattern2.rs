@@ -37,7 +37,13 @@ fn element_identity(element: &IUIAutomationElement, process_id: i32) -> String {
             .CurrentClassName()
             .map(|value| value.display().to_string())
             .unwrap_or_default();
-        format!("{process_id}|{class_name}|{automation_id}|{name}")
+        let process_id = process_id.to_string();
+        crate::windows_diagnostics::identity_key(&[
+            &process_id,
+            &class_name,
+            &automation_id,
+            &name,
+        ])
     }
 }
 
@@ -52,26 +58,22 @@ fn selection_delta(old: &str, new: &str) -> Option<(&'static str, String)> {
         return Some(("unselected", old.to_string()));
     }
 
-    if new.ends_with(old) {
-        let added = &new[..new.len() - old.len()];
+    if let Some(added) = new.strip_suffix(old) {
         if !added.is_empty() {
             return Some(("selected", added.to_string()));
         }
     }
-    if new.starts_with(old) {
-        let added = &new[old.len()..];
+    if let Some(added) = new.strip_prefix(old) {
         if !added.is_empty() {
             return Some(("selected", added.to_string()));
         }
     }
-    if old.ends_with(new) {
-        let removed = &old[..old.len() - new.len()];
+    if let Some(removed) = old.strip_suffix(new) {
         if !removed.is_empty() {
             return Some(("unselected", removed.to_string()));
         }
     }
-    if old.starts_with(new) {
-        let removed = &old[new.len()..];
+    if let Some(removed) = old.strip_prefix(new) {
         if !removed.is_empty() {
             return Some(("unselected", removed.to_string()));
         }
