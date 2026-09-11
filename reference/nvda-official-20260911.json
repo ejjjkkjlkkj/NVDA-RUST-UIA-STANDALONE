@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/nvaccess/nvda.git",
+  "branch": "master",
+  "commit": "c43cf6c1b0518326bd9ff0ed4712474feeb6131c",
+  "capturedAt": "2026-09-11",
+  "mode": "read-only-reference",
+  "references": [
+    "projectDocs/design/technicalDesignOverview.md",
+    "source/NVDAObjects/__init__.py",
+    "source/browseMode.py",
+    "source/inputCore.py",
+    "user_docs/en/userGuide.md"
+  ],
+  "adoptConceptsOnly": true,
+  "copyNvdaSourceIntoRuntime": false
+}
