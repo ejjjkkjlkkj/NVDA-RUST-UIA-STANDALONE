@@ -109,6 +109,15 @@ jobs:
             -ScreenReaderExe $exe `
             -EvidenceDir $evidence
 
+      - name: Assert speech synthesis pipeline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'windows-blind-user-evidence'
+          & '.\tests\windows\AssertSpeechEvidence.ps1' `
+            -ScreenReaderLog (Join-Path $evidence 'screen-reader.stdout.txt') `
+            -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
+
       - name: Publish blind-user summary
         if: always()
         shell: pwsh
@@ -128,6 +137,9 @@ jobs:
             $lines += "- Fixture TextChanged events: $($data.fixtureTextChangedEvents)"
             $lines += "- Fixture TextSelectionChanged events: $($data.fixtureTextSelectionEvents)"
             $lines += "- Native application UIA events: $($data.nativeAppUiaEvents)"
+            $lines += "- Speech pipeline asserted: $($data.speechPipelineAsserted)"
+            $lines += "- Speech requests / outputs / failures: $($data.speechRequests) / $($data.speechOutputsStarted) / $($data.speechFailures)"
+            $lines += "- Physical audio device asserted: $($data.physicalAudioDeviceAsserted)"
             $lines += "- Official NVDA reference SHA: $($data.nvdaOfficialReference.sha)"
             $lines += '- NVDA runtime executed in this scenario: no'
             $lines += ''
