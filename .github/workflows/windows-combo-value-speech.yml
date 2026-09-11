@@ -69,12 +69,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $evidence = Join-Path $PWD 'windows-combo-value-speech-evidence'
           $logPath = Join-Path $evidence 'screen-reader.stdout.txt'
-          $log = Get-Content $logPath -Raw
+          $lines = @(Get-Content $logPath)
 
-          if ($log -notmatch 'VALUE_SPEECH #\d+ \| control=combo-box \| value=Detailed') {
+          $valueMarkers = @(
+            $lines | Where-Object { $_ -match '^VALUE_SPEECH #\d+ \| control=combo-box \| value=Detailed\s*$' }
+          )
+          if ($valueMarkers.Count -lt 1) {
             throw 'Keyboard combo change was not converted to value speech for Detailed'
           }
-          if ($log -notmatch 'SPEECH_OUTPUT #\d+ = PASS \| Detailed\s*$') {
+
+          $speechOutputs = @(
+            $lines | Where-Object { $_ -match '^SPEECH_OUTPUT #\d+ = PASS \| Detailed\s*$' }
+          )
+          if ($speechOutputs.Count -lt 1) {
             throw 'Detailed combo value was queued but did not reach speech output'
           }
 
@@ -82,7 +89,7 @@ jobs:
             -ScreenReaderLog $logPath `
             -SummaryPath (Join-Path $evidence 'blind-user-summary.json')
 
-          'COMBO_VALUE_SPEECH_E2E = PASS | value=Detailed | keyboard_only=true'
+          "COMBO_VALUE_SPEECH_E2E = PASS | value=Detailed | markers=$($valueMarkers.Count) | outputs=$($speechOutputs.Count) | keyboard_only=true"
 
       - name: Upload evidence
         if: always()
