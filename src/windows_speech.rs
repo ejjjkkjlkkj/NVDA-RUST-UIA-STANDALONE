@@ -17,7 +17,7 @@ struct SpeechEngine {
 }
 
 enum SpeechCommand {
-    Speak {
+    Queued {
         sequence: u64,
         text: String,
     },
@@ -122,12 +122,7 @@ fn render(engine: &SpeechEngine, sequence: u64, text: &str) {
     }
 }
 
-fn render_replaceable(
-    engine: &SpeechEngine,
-    sequence: u64,
-    generation: u64,
-    text: &str,
-) {
+fn render_replaceable(engine: &SpeechEngine, sequence: u64, generation: u64, text: &str) {
     if generation != LATEST_REPLACE_GENERATION.load(Ordering::Acquire) {
         output_replaced(sequence, text);
         return;
@@ -184,7 +179,7 @@ fn speech_worker(receiver: mpsc::Receiver<SpeechCommand>, ready: mpsc::SyncSende
 
     while let Ok(command) = receiver.recv() {
         match command {
-            SpeechCommand::Speak { sequence, text } => render(&engine, sequence, &text),
+            SpeechCommand::Queued { sequence, text } => render(&engine, sequence, &text),
             SpeechCommand::Replace {
                 sequence,
                 generation,
@@ -222,7 +217,7 @@ pub fn initialize() -> Result<()> {
 
     println!("SPEECH_OUTPUT_INIT = PASS");
     println!("SPEECH_DISPATCH = ASYNC_WORKER");
-    println!("SPEECH_REPLACE_POLICY = LATEST_WINS");
+    println!("SPEECH_REPLACE_POLICY = INTERACTIVE_LATEST_WINS");
     crate::windows_diagnostics::print_policy_marker();
     Ok(())
 }
@@ -241,20 +236,10 @@ fn enqueue(command: SpeechCommand, sequence: u64) {
     }
 }
 
+/// Speak transient interactive feedback. Newer feedback supersedes older
+/// feedback that has not reached MediaPlayer yet. This prevents stale focus,
+/// caret and state announcements from building up behind a fast keyboard user.
 pub fn speak(text: &str) {
-    let Some(text) = prepare_text(text) else {
-        return;
-    };
-
-    let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    println!(
-        "SPEECH_REQUEST #{sequence} | mode=queue | {}",
-        crate::windows_diagnostics::text(&text)
-    );
-    enqueue(SpeechCommand::Speak { sequence, text }, sequence);
-}
-
-pub fn speak_latest(text: &str) {
     let Some(text) = prepare_text(text) else {
         return;
     };
@@ -273,6 +258,22 @@ pub fn speak_latest(text: &str) {
         },
         sequence,
     );
+}
+
+/// Speak content that must remain ordered and must not be superseded by newer
+/// interactive feedback. Reserved for future say-all, explicit read commands
+/// and other sequence-preserving output.
+pub fn speak_queued(text: &str) {
+    let Some(text) = prepare_text(text) else {
+        return;
+    };
+
+    let sequence = SPEECH_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    println!(
+        "SPEECH_REQUEST #{sequence} | mode=queue | {}",
+        crate::windows_diagnostics::text(&text)
+    );
+    enqueue(SpeechCommand::Queued { sequence, text }, sequence);
 }
 
 fn flush() {
